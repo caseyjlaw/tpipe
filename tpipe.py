@@ -71,6 +71,14 @@ class reader:
             'pulsewidth' : 0.0,      # width of pulse in time (seconds)
             'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
             'pathout': './'         # place to put output files
+            },
+        'pgb32' : {
+            'ants' : range(0,32),          # antenna set to look for (only works for ms data)
+            'chans': n.array(range(200)),   # channels to read
+            'dmarr' : [0.],      # dm values to use for dedispersion (only for some subclasses)
+            'pulsewidth' : 0.0,      # width of pulse in time (seconds)
+            'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
+            'pathout': './'         # place to put output files
             }
         }
 
@@ -629,7 +637,7 @@ class pipe_msint(msreader):
                 if bgrange.index(k) == 0:   # first time through
                     trackoff = (list(n.array(track_t)+k), track_c)
                 else:    # then extend arrays by next iterations
-                    trackoff = (trackoff[0] + list(n.array(track_t)+k), trackoff[1] + track_c)
+                    trackoff = (trackoff[0] + list(n.array(track_t)+k), list(trackoff[1]) + list(track_c))
 
             dataoff = data[trackoff[0], :, trackoff[1]]
 
@@ -1126,7 +1134,7 @@ In practice, this search involves plotting the mean bispectrum versus time and s
             if save:
                 if save == 1:
                     savename = self.file.split('.')[:-1]
-                    savename.append(str(self.nskip/self.nbl) + '_disp.png')
+                    savename.append(str(self.scan) + '_' + str(self.nskip/self.nbl) + '_disp.png')
                     savename = string.join(savename,'.')
                 elif type(save) == type('hi'):
                     savename = save
@@ -1168,7 +1176,7 @@ class pipe_mirint(mirreader):
                 if bgrange.index(k) == 0:   # first time through
                     trackoff = (list(n.array(track_t)+k), track_c)
                 else:    # then extend arrays by next iterations
-                    trackoff = (trackoff[0] + list(n.array(track_t)+k), trackoff[1] + track_c)
+                    trackoff = (trackoff[0] + list(n.array(track_t)+k), list(trackoff[1]) + list(track_c))
 
             dataoff = data[trackoff[0], :, trackoff[1]]
 
@@ -1189,6 +1197,136 @@ class pipe_mirint(mirreader):
                 datadiffarr[ch] = meanon
 
         return n.transpose(datadiffarr, axes=[2,1,0])
+
+    def make_bispectra(self, bgwindow=4):
+        """
+        Makes numpy array of bispectra for each integration. Subtracts visibilities in time in bgwindow.
+        """
+
+
+        bisp = lambda d, ij, jk, ki: d[:,ij] * d[:,jk] * n.conj(d[:,ki])    # bispectrum for pol data
+#        bisp = lambda d, ij, jk, ki: n.complex(d[ij] * d[jk] * n.conj(d[ki]))  # without pol axis
+
+        triples = self.make_triples()
+
+        self.bispectra = n.zeros((len(self.data), len(triples)), dtype='complex')
+        truearr = n.ones( (self.npol, self.nbl, self.nchan))
+        falsearr = n.zeros( (self.npol, self.nbl, self.nchan))
+
+        for i in range(bgwindow/2, len(self.data)-(bgwindow/2+1)):
+            diff = self.tracksub(i, bgwindow=bgwindow)
+
+            if len(n.shape(diff)) == 1:    # no track
+                continue
+
+            weightarr = n.where(diff != 0j, truearr, falsearr)  # ignore zeros in mean across channels # bit of a hack
+
+            try:
+                diffmean = n.average(diff, axis=2, weights=weightarr)
+            except ZeroDivisionError:
+                diffmean = n.mean(diff, axis=2)    # if all zeros, just make mean # bit of a hack
+
+            for trip in range(len(triples)):
+                ij, jk, ki = triples[trip]
+                self.bispectra[i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)  # Stokes I bispectrum. should be ok for multipol data...
+
+    def detect_bispectra(self, sigma=5., tol=1.3, show=0, save=0):
+        """Function to search for a transient in a bispectrum lightcurve.
+        Designed to be used by bisplc function or easily fed the output of that function.
+        sigma gives the threshold for SNR_bisp (apparent). 
+        tol gives the amount of tolerance in the sigma_b cut for point-like sources (rfi filter).
+        Returns the SNR and integration number of any candidate events.
+        save=0 is no saving, save=1 is save with default name, save=<string>.png uses custom name (must include .png). 
+        """
+        try:
+            ba = self.bispectra
+        except AttributeError:
+            print 'Need to make bispectra first.'
+            return
+
+        ntr = lambda num: num*(num-1)*(num-2)/6.  # theoretical number of triples
+#        ntr = lambda num: n.mean([len(n.where(ba[i] != 0j)[0]) for i in range(len(ba))])   # consider possibility of zeros in data and take mean number of good triples over all times
+
+        # using s=S/Q
+#        mu = lambda s: s/(1+s)  # for independent bispectra, as in kulkarni 1989
+        mu = lambda s: 1.  # for bispectra at high S/N from visibilities?
+        sigbQ3 = lambda s: n.sqrt((1 + 3*mu(s)**2) + 3*(1 + mu(s)**2)*s**2 + 3*s**4)  # from kulkarni 1989, normalized by Q**3, also rogers et al 1995
+        s = lambda basnr, nants: (2.*basnr/n.sqrt(ntr(nants)))**(1/3.)
+
+        # measure SNR_bl==Q from sigma clipped times with normal mean and std of bispectra. put into time,dm order
+        bamean = ba.real.mean(axis=1)
+        bastd = ba.real.std(axis=1)
+
+        (meanmin,meanmax) = sigma_clip(bamean)  # remove rfi
+        (stdmin,stdmax) = sigma_clip(bastd)  # remove rfi
+        clipped = n.where((bamean > meanmin) & (bamean < meanmax) & (bastd > stdmin) & (bastd < stdmax) & (bamean != 0.0))[0]  # remove rf
+
+        bameanstd = ba[clipped].real.mean(axis=1).std()
+        basnr = bamean/bameanstd
+        Q = ((bameanstd/2.)*n.sqrt(ntr(self.nants)))**(1/3.)
+#        Q = n.median( bastd[clipped]**(1/3.) )              # alternate for Q
+#        Q = sigt0toQ(bameanstd, self.nants)              # alternate for Q
+        print 'Noise per baseline (system units), Q =', Q
+
+        # detect
+        cands = n.where( (bastd/Q**3 < tol*sigbQ3(s(basnr, self.nants))) & (basnr > sigma) )[0]  # define compact sources with good snr
+
+        # plot snrb lc and expected snr vs. sigb relation
+        if show or save:
+            p.figure(1)
+            ax = p.axes()
+            p.subplot(211)
+            p.title(str(self.nskip/self.nbl)+' nskip, ' + str(len(cands))+' candidates', transform = ax.transAxes)
+            p.plot(basnr, 'b.')
+            if len(cands) > 0:
+                p.plot(cands, basnr[cands], 'r*')
+                p.ylim(-2*basnr[cands].max(),2*basnr[cands].max())
+            p.xlabel('Integration')
+            p.ylabel('SNR$_{bisp}$')
+            p.subplot(212)
+            p.plot(bastd/Q**3, basnr, 'b.')
+
+            # plot reference theory lines
+            smax = s(basnr.max(), self.nants)
+            sarr = smax*n.arange(0,51)/50.
+            p.plot(sigbQ3(sarr), 1/2.*sarr**3*n.sqrt(ntr(self.nants)), 'k')
+            p.plot(tol*sigbQ3(sarr), 1/2.*sarr**3*n.sqrt(ntr(self.nants)), 'k--')
+            p.plot(bastd[cands]/Q**3, basnr[cands], 'r*')
+
+            if len(cands) > 0:
+                p.axis([0, tol*sigbQ3(s(basnr[cands].max(), self.nants)), -0.5*basnr[cands].max(), 1.1*basnr[cands].max()])
+
+                # show spectral modulation next to each point
+                for candint in cands:
+                    sm = n.single(round(self.specmod(candint),1))
+                    p.text(bastd[candint]/Q**3, basnr[candint], str(sm), horizontalalignment='right', verticalalignment='bottom')
+            p.xlabel('$\sigma_b/Q^3$')
+            p.ylabel('SNR$_{bisp}$')
+            if save:
+                if save == 1:
+                    savename = self.file.split('.')[:-1]
+                    savename.append(str(self.nskip/self.nbl) + '_bisp.png')
+                    savename = string.join(savename,'.')
+                elif type(save) == type('hi'):
+                    savename = save
+                print 'Saving file as ', savename
+                p.savefig(self.pathout+savename)
+
+        return basnr[cands], bastd[cands], cands
+
+    def specmod(self, tbin, bgwindow=4):
+        """Calculate spectral modulation for given track.
+        Spectral modulation is basically the standard deviation of a spectrum. 
+        This helps quantify whether the flux is located in a narrow number of channels or across all channels.
+        Narrow RFI has large (>5) modulation, while spectrally broad emission has low modulation.
+        See Spitler et al 2012 for details.
+        """
+
+        diff = self.tracksub(tbin, bgwindow=bgwindow)
+        bfspec = diff.mean(axis=0).real  # should be ok for multipol data...
+        sm = n.sqrt( ((bfspec**2).mean() - bfspec.mean()**2) / bfspec.mean()**2 )
+
+        return sm
 
     def make_phasedbeam(self):
         """Like that of dispersion-based classes, but integration-based.
