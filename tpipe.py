@@ -49,7 +49,7 @@ except ImportError:
 class reader:
     """ Master class with basic functions.
     params defines various tunable parameters for reading data and running pipelines. 
-    Not all params are useful for all pipelines.
+    Set your own set of parameters by adding to the params dictionary.
     """
 
     # parameters used by various subclasses
@@ -597,7 +597,7 @@ class pipe_msint(msreader):
 
         reltime = self.reltime
         chans = self.chans
-        tint = self.inttime     # hack! actually grabs in window of 2*tint. avoids problems with time alignment.
+        tint = self.inttime
 
         # calculate pulse time and duration
         pulset = t0
@@ -841,7 +841,7 @@ class pipe_msdisp(msreader):
 
         reltime = self.reltime
         chans = self.chans
-        tint = self.inttime   # hack! actually grabs in window of 2*tint. avoids problems with time alignment.
+        tint = self.inttime
 
         # given freq, dm, dfreq, calculate pulse time and duration
         pulset_firstchan = 4.2e-3 * dm * self.freq[len(self.chans)-1]**(-2)   # used to start dmtrack at highest-freq unflagged channel
@@ -883,7 +883,7 @@ class pipe_msdisp(msreader):
                 if bgrange.index(k) == 0:   # first time through
                     trackoff = (list(n.array(track0)+k), track1)
                 else:    # then extend arrays by next iterations
-                    trackoff = (trackoff[0] + list(n.array(track0)+k), trackoff[1] + track1)
+                    trackoff = (trackoff[0] + list(n.array(track0)+k), list(trackoff[1]) + list(track1))
 
             dataoff = data[trackoff[0], :, trackoff[1]]
 
@@ -1156,7 +1156,39 @@ class pipe_mirint(mirreader):
 
         self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
 
-        self.track0 = [n.zeros(len(self.chans)), self.chans]  # note that this may lose some sensitivity at half-int steps
+        self.track0 = self.track(0.)
+        self.twidth = 0
+        for k in self.track0[1]:
+            self.twidth = max(self.twidth, len(n.where(n.array(self.track0[1]) == k)[0]))
+
+    def track(self, t0 = 0., show=0):
+        """ Takes time offset from first integration in seconds.
+        t0 defined at first (unflagged) channel.
+        Returns an array of (timebin, channel) to select from the data array.
+        """
+
+        reltime = self.reltime
+        chans = self.chans
+        tint = self.inttime
+
+        # calculate pulse time and duration
+        pulset = t0
+        pulsedt = self.pulsewidth[0]   # dtime in seconds. just take one channel, since there is no freq dep
+
+        timebin = []
+        chanbin = []
+
+        ontime = n.where(((pulset + pulsedt) >= reltime - tint/2.) & (pulset <= reltime + tint/2.))
+        for ch in range(len(chans)):
+            timebin = n.concatenate((timebin, ontime[0]))
+            chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype=int))))
+
+        track = (list(timebin), list(chanbin))
+
+        if show:
+            p.plot(track[0], track[1], 'w*')
+
+        return track
 
     def tracksub(self, tbin, bgwindow = 0):
         """ Creates a background-subtracted set of visibilities.
@@ -1375,7 +1407,7 @@ class pipe_mirdisp(mirreader):
 
         reltime = self.reltime
         chans = self.chans
-        tint = self.inttime   # hack! actually grabs in window of 2*tint. avoids problems with time alignment.
+        tint = self.inttime
 
         # given freq, dm, dfreq, calculate pulse time and duration
         pulset_firstchan = 4.2e-3 * dm * self.freq[len(self.chans)-1]**(-2)   # used to start dmtrack at highest-freq unflagged channel
@@ -1417,7 +1449,7 @@ class pipe_mirdisp(mirreader):
                 if bgrange.index(k) == 0:   # first time through
                     trackoff = (list(n.array(track0)+k), track1)
                 else:    # then extend arrays by next iterations
-                    trackoff = (trackoff[0] + list(n.array(track0)+k), trackoff[1] + track1)
+                    trackoff = (trackoff[0] + list(n.array(track0)+k), list(trackoff[1]) + list(track1))
 
             dataoff = data[trackoff[0], :, trackoff[1]]
 
