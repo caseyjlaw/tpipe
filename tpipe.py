@@ -1068,7 +1068,7 @@ In practice, this search involves plotting the mean bispectrum versus time and s
         """ Integrates data at dmtrack for each pair of elements in dmarr, time.
         Not threaded.  Uses dmthread directly.
         Stores mean of detected signal after dmtrack, effectively forming beam at phase center.
-        Probably ok for multipol data...
+        Ignores zeros in any bl, freq, time.
         """
 
         self.phasedbeam = n.zeros((len(self.dmarr),len(self.reltime)), dtype='float64')
@@ -1077,10 +1077,17 @@ In practice, this search involves plotting the mean bispectrum versus time and s
             for j in range(len(self.reltime)):
                 dmtrack = self.dmtrack(dm=self.dmarr[i], t0=self.reltime[j])
                 if ((dmtrack[1][0] == 0) & (dmtrack[1][len(dmtrack[1])-1] == len(self.chans)-1)):   # use only tracks that span whole band
-                    self.phasedbeam[i,j] = ((((self.data).mean(axis=1))[dmtrack[0],dmtrack[1]]).mean()).real    # use real part to detect on axis, but keep gaussian dis'n
+                    truearr = n.ones( (len(dmtrack[0]), self.nbl, self.npol))
+                    falsearr = n.zeros( (len(dmtrack[0]), self.nbl, self.npol))
+                    selection = self.data[dmtrack[0], :, dmtrack[1], :]
+                    weightarr = n.where(selection != 0j, truearr, falsearr)  # ignore zeros in mean across channels # bit of a hack
+                    try:
+                        self.phasedbeam[i,j] = n.average(selection, weights=weightarr).real
+                    except ZeroDivisionError:
+                        self.phasedbeam[i,j] = n.mean(selection).real    # if all zeros, just make mean # bit of a hack
             print 'dedispersed for ', self.dmarr[i]
 
-    def detect_phasedbeam(self, sig=5., show=1, save=0):
+    def detect_phasedbeam(self, sig=5., show=1, save=0, clipplot=1):
         """ Method to find transients in dedispersed data (in dmt0 space).
         Clips noise then does sigma threshold.
         returns array of candidates transients.
@@ -1101,35 +1108,46 @@ In practice, this search involves plotting the mean bispectrum versus time and s
         std = arr.std()
         print 'initial mean, std:  ', mean, std
         amin,amax = sigma_clip(arr.flatten())
-        clipped = arr[n.where((arr < amax) & (arr > amin))]
+        clipped = arr[n.where((arr < amax) & (arr > amin) & (arr != 0.))]
         mean = clipped.mean()
         std = clipped.std()
         print 'final mean, sig, std:  ', mean, sig, std
 
         # Recast arr as significance array
-        arr_norm = (arr-mean)/std   # for real valued trial output, gaussian dis'n, zero mean
+        arr_snr = (arr-mean)/std   # for real valued trial output, gaussian dis'n, zero mean
 
         # Detect peaks
-        peaks = n.where(arr_norm > sig)
-        peakmax = n.where(arr_norm == arr_norm.max())
+        peaks = n.where(arr_snr > sig)
+        peakmax = n.where(arr_snr == arr_snr.max())
         print 'peaks:  ', peaks
 
         # Plot
         if show:
             p.clf()
-            ax = p.imshow(arr_norm, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)), vmin=amin, vmax=amax)
-            p.colorbar()
+            ax = p.axes()
+            if clipplot:
+                im = p.imshow(arr, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)), vmin=amin, vmax=amax)
+            else:
+                im = p.imshow(arr, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
+            cb = p.colorbar(im)
+            cb.set_label('Flux Density (Jy)',fontsize=12,fontweight="bold")
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['bottom'].set_position(('outward', 20))
+            ax.spines['left'].set_position(('outward', 30))
+            ax.yaxis.set_ticks_position('left')
+            ax.xaxis.set_ticks_position('bottom')
 
             if len(peaks[0]) > 0:
-                print 'Peak of %f at DM=%f, t0=%f' % (arr_norm.max(), self.dmarr[peakmax[0][0]], reltime[peakmax[1][0]])
+                print 'Peak of %f at DM=%f, t0=%f' % (arr.max(), self.dmarr[peakmax[0][0]], reltime[peakmax[1][0]])
 
                 for i in range(len(peaks[1])):
-                    ax = p.imshow(arr_norm, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
+                    ax = p.imshow(arr, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
                     p.axis((min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
-                    p.plot([reltime[peaks[1][i]]], [self.dmarr[peaks[0][i]]], 'o', markersize=2*arr_norm[peaks[0][i],peaks[1][i]], markerfacecolor='white', markeredgecolor='blue', alpha=0.5)
+                    p.plot([reltime[peaks[1][i]]], [self.dmarr[peaks[0][i]]], 'o', markersize=2*arr_snr[peaks[0][i],peaks[1][i]], markerfacecolor='white', markeredgecolor='blue', alpha=0.5)
 
-            p.xlabel('Time (s)')
-            p.ylabel('DM (pc/cm3)')
+            p.xlabel('Time (s)', fontsize=12, fontweight='bold')
+            p.ylabel('DM (pc/cm3)', fontsize=12, fontweight='bold')
             p.title('Summed Spectra in DM-t0 space')
             if save:
                 if save == 1:
@@ -1141,7 +1159,7 @@ In practice, this search involves plotting the mean bispectrum versus time and s
                 print 'Saving file as ', savename
                 p.savefig(self.pathout+savename)
 
-        return peaks,arr_norm[peaks]
+        return peaks,arr[peaks],arr_snr[peaks]
 
 
 class pipe_mirint(mirreader):
@@ -1630,6 +1648,103 @@ In practice, this search involves plotting the mean bispectrum versus time and s
 
         return sm
 
+    def make_phasedbeam(self):
+        """ Integrates data at dmtrack for each pair of elements in dmarr, time.
+        Not threaded.  Uses dmthread directly.
+        Stores mean of detected signal after dmtrack, effectively forming beam at phase center.
+        Ignores zeros in any bl, freq, time.
+        """
+
+        self.phasedbeam = n.zeros((len(self.dmarr),len(self.reltime)), dtype='float64')
+
+        for i in range(len(self.dmarr)):
+            for j in range(len(self.reltime)):
+                dmtrack = self.dmtrack(dm=self.dmarr[i], t0=self.reltime[j])
+                if ((dmtrack[1][0] == 0) & (dmtrack[1][len(dmtrack[1])-1] == len(self.chans)-1)):   # use only tracks that span whole band
+                    truearr = n.ones( (len(dmtrack[0]), self.nbl, self.npol))
+                    falsearr = n.zeros( (len(dmtrack[0]), self.nbl, self.npol))
+                    selection = self.data[dmtrack[0], :, dmtrack[1], :]
+                    weightarr = n.where(selection != 0j, truearr, falsearr)  # ignore zeros in mean across channels # bit of a hack
+                    try:
+                        self.phasedbeam[i,j] = n.average(selection, weights=weightarr).real
+                    except ZeroDivisionError:
+                        self.phasedbeam[i,j] = n.mean(selection).real    # if all zeros, just make mean # bit of a hack
+            print 'dedispersed for ', self.dmarr[i]
+
+    def detect_phasedbeam(self, sig=5., show=1, save=0, clipplot=1):
+        """ Method to find transients in dedispersed data (in dmt0 space).
+        Clips noise then does sigma threshold.
+        returns array of candidates transients.
+        Optionally plots beamformed lightcurve.
+        save=0 is no saving, save=1 is save with default name, save=<string>.png uses custom name (must include .png). 
+        """
+
+        try:
+            arr = self.phasedbeam
+        except AttributeError:
+            print 'Need to make phasedbeam first.'
+            return
+
+        reltime = self.reltime
+
+        # single iteration of sigma clip to find mean and std, skipping zeros
+        mean = arr.mean()
+        std = arr.std()
+        print 'initial mean, std:  ', mean, std
+        amin,amax = sigma_clip(arr.flatten())
+        clipped = arr[n.where((arr < amax) & (arr > amin) & (arr != 0.))]
+        mean = clipped.mean()
+        std = clipped.std()
+        print 'final mean, sig, std:  ', mean, sig, std
+
+        # Recast arr as significance array
+        arr_snr = (arr-mean)/std   # for real valued trial output, gaussian dis'n, zero mean
+
+        # Detect peaks
+        peaks = n.where(arr_snr > sig)
+        peakmax = n.where(arr_snr == arr_snr.max())
+        print 'peaks:  ', peaks
+
+        # Plot
+        if show:
+            p.clf()
+            ax = p.axes()
+            if clipplot:
+                im = p.imshow(arr, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)), vmin=amin, vmax=amax)
+            else:
+                im = p.imshow(arr, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
+            cb = p.colorbar(im)
+            cb.set_label('Flux Density (Jy)',fontsize=12,fontweight="bold")
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['bottom'].set_position(('outward', 20))
+            ax.spines['left'].set_position(('outward', 30))
+            ax.yaxis.set_ticks_position('left')
+            ax.xaxis.set_ticks_position('bottom')
+
+            if len(peaks[0]) > 0:
+                print 'Peak of %f at DM=%f, t0=%f' % (arr.max(), self.dmarr[peakmax[0][0]], reltime[peakmax[1][0]])
+
+                for i in range(len(peaks[1])):
+                    ax = p.imshow(arr, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
+                    p.axis((min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
+                    p.plot([reltime[peaks[1][i]]], [self.dmarr[peaks[0][i]]], 'o', markersize=2*arr_snr[peaks[0][i],peaks[1][i]], markerfacecolor='white', markeredgecolor='blue', alpha=0.5)
+
+            p.xlabel('Time (s)', fontsize=12, fontweight='bold')
+            p.ylabel('DM (pc/cm3)', fontsize=12, fontweight='bold')
+            p.title('Summed Spectra in DM-t0 space')
+            if save:
+                if save == 1:
+                    savename = self.file.split('.')[:-1]
+                    savename.append(str(self.scan) + '_' + str(self.nskip/self.nbl) + '_disp.png')
+                    savename = string.join(savename,'.')
+                elif type(save) == type('hi'):
+                    savename = save
+                print 'Saving file as ', savename
+                p.savefig(self.pathout+savename)
+
+        return peaks,arr[peaks],arr_snr[peaks]
+
     def writetrack(self, dmbin, tbin, tshift=0, bgwindow=0, show=0, pol=0):
         """ Writes data from track out as miriad visibility file.
         Alternative to writetrack that uses stored, approximate preamble used from start of pulse, not middle.
@@ -1777,85 +1892,6 @@ In practice, this search involves plotting the mean bispectrum versus time and s
 
         dOut.close ()
         return 1
-
-    def make_phasedbeam(self):
-        """ Integrates data at dmtrack for each pair of elements in dmarr, time.
-        Not threaded.  Uses dmthread directly.
-        Stores mean of detected signal after dmtrack, effectively forming beam at phase center.
-        Probably ok for multipol data...
-        """
-
-        self.phasedbeam = n.zeros((len(self.dmarr),len(self.reltime)), dtype='float64')
-
-        for i in range(len(self.dmarr)):
-            for j in range(len(self.reltime)):
-                dmtrack = self.dmtrack(dm=self.dmarr[i], t0=self.reltime[j])
-                if ((dmtrack[1][0] == 0) & (dmtrack[1][len(dmtrack[1])-1] == len(self.chans)-1)):   # use only tracks that span whole band
-                    self.phasedbeam[i,j] = ((((self.data).mean(axis=1))[dmtrack[0],dmtrack[1]]).mean()).real    # use real part to detect on axis, but keep gaussian dis'n
-            print 'dedispersed for ', self.dmarr[i]
-
-    def detect_phasedbeam(self, sig=5., show=1, save=0):
-        """ Method to find transients in dedispersed data (in dmt0 space).
-        Clips noise then does sigma threshold.
-        returns array of candidates transients.
-        Optionally plots beamformed lightcurve.
-        save=0 is no saving, save=1 is save with default name, save=<string>.png uses custom name (must include .png). 
-        """
-
-        try:
-            arr = self.phasedbeam
-        except AttributeError:
-            print 'Need to make phasedbeam first.'
-            return
-
-        reltime = self.reltime
-
-        # single iteration of sigma clip to find mean and std, skipping zeros
-        mean = arr.mean()
-        std = arr.std()
-        print 'initial mean, std:  ', mean, std
-        amin,amax = sigma_clip(arr.flatten())
-        clipped = arr[n.where((arr < amax) & (arr > amin))]
-        mean = clipped.mean()
-        std = clipped.std()
-        print 'final mean, sig, std:  ', mean, sig, std
-
-        # Recast arr as significance array
-        arr_norm = (arr-mean)/std   # for real valued trial output, gaussian dis'n, zero mean
-
-        # Detect peaks
-        peaks = n.where(arr_norm > sig)
-        peakmax = n.where(arr_norm == arr_norm.max())
-        print 'peaks:  ', peaks
-
-        # Plot
-        if show:
-            p.clf()
-            ax = p.imshow(arr_norm, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)), vmin=amin, vmax=amax)
-            p.colorbar()
-
-            if len(peaks[0]) > 0:
-                print 'Peak of %f at DM=%f, t0=%f' % (arr_norm.max(), self.dmarr[peakmax[0][0]], reltime[peakmax[1][0]])
-
-                for i in range(len(peaks[1])):
-                    ax = p.imshow(arr_norm, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
-                    p.axis((min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
-                    p.plot([reltime[peaks[1][i]]], [self.dmarr[peaks[0][i]]], 'o', markersize=2*arr_norm[peaks[0][i],peaks[1][i]], markerfacecolor='white', markeredgecolor='blue', alpha=0.5)
-
-            p.xlabel('Time (s)')
-            p.ylabel('DM (pc/cm3)')
-            p.title('Summed Spectra in DM-t0 space')
-            if save:
-                if save == 1:
-                    savename = self.file.split('.')[:-1]
-                    savename.append(str(self.nskip/self.nbl) + '_disp.png')
-                    savename = string.join(savename,'.')
-                elif type(save) == type('hi'):
-                    savename = save
-                print 'Saving file as ', savename
-                p.savefig(self.pathout+savename)
-
-        return peaks,arr_norm[peaks]
 
 
 def sigma_clip(arr,sigma=3):
