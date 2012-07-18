@@ -62,7 +62,8 @@ class reader:
             'dmarr' : [44.,88.],      # dm values to use for dedispersion (only for some subclasses)
             'pulsewidth' : 0.0,      # width of pulse in time (seconds)
             'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
-            'pathout': './'         # place to put output files
+            'pathout': './',         # place to put output files
+            'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
             },
         'vlacrab' : {
             'ants' : range(0,8),          # antenna set to look for (only works for ms data)
@@ -70,15 +71,17 @@ class reader:
             'dmarr' : [29.,58.],      # dm values to use for dedispersion (only for some subclasses)
             'pulsewidth' : 0.0,      # width of pulse in time (seconds)
             'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
-            'pathout': './'         # place to put output files
+            'pathout': './',         # place to put output files
+            'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
             },
-        'pgb32' : {
+        'psa32' : {
             'ants' : range(0,32),          # antenna set to look for (only works for ms data)
             'chans': n.array(range(200)),   # channels to read
             'dmarr' : [0.],      # dm values to use for dedispersion (only for some subclasses)
             'pulsewidth' : 0.0,      # width of pulse in time (seconds)
             'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
-            'pathout': './'         # place to put output files
+            'pathout': './',         # place to put output files
+            'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
             }
         }
 
@@ -97,6 +100,7 @@ class reader:
         self.pulsewidth = self.params[version]['pulsewidth']
         self.approxuvw = self.params[version]['approxuvw']
         self.ants = self.params[version]['ants']
+        self.beam_params = self.params[version]['beam_params']
 
     def show_params(self, version='default'):
         """ Print parameters of pipeline.
@@ -185,11 +189,13 @@ class reader:
 
         return self.blarr,bllen
 
-    def imagetrack(self, track, int=0, pol='i', size=48000, res=500, clean=True, save=0):
+    def imagetrack(self, track, i=0, pol='i', size=48000, res=500, clean=True, gain=0.01, tol=1e-4, newbeam=0, save=0):
         """ Image a track returned by tracksub of dimensions (npol, nbl, nchan).
         int is used to select uvw coordinates for track. default is first int.
         pol can be 'i' for a Stokes I image (mean over pol dimension) or a pol index.
         default params size and res are good for 1.4 GHz VLA, C-config image.
+        clean determines if image is cleaned and beam corrected. gain/tol are cleaning params.
+        newbeam forces the calculation of a new beam for restoring the cleaned image.
         save=0 is no saving, save=1 is save with default name, save=<string>.png uses custom name (must include .png). 
         """
 
@@ -210,16 +216,29 @@ class reader:
 
         # make image
         ai = aipy.img.Img(size=size, res=res)
-        ai.put( (self.u[int],self.v[int],self.w[int]), tr)
+        ai.put( (self.u[i],self.v[i],self.w[i]), tr)
         image = ai.image(center = (size/res/2, size/res/2))
         image_final = image
 
         # optionally clean image
         if clean:
+            print 'Cleaning image...'
             beam = ai.bm_image()
             beamgain = aipy.img.beam_gain(beam[0])
-            (clean, dd) = aipy.deconv.clean(image, beam[0], verbose=True, gain=0.01, tol=1e-4)  # light cleaning
-            kernel = n.where(beam[0] >= 0.4*beam[0].max(), beam[0], 0.)  # take only peak (gaussian part) pixels of beam image
+            (clean, dd) = aipy.deconv.clean(image, beam[0], verbose=True, gain=gain, tol=tol)  # light cleaning
+
+            try:
+                import gaussfitter
+                if (len(self.beam_params) == 1) | (newbeam == 1) :
+                    print 'Restoring image with new fit to beam...'
+                    beam_centered = ai.bm_image(center=(size/res/2, size/res/2))
+                    peak = n.where(beam_centered[0] >= 0.1*beam_centered[0].max(), beam_centered[0], 0.)
+                    self.beam_params = gaussfitter.gaussfit(peak)
+                kernel = n.roll(n.roll(gaussfitter.twodgaussian(self.beam_params, shape=n.shape(beam[0])), size/res/2, axis=0), size/res/2, axis=1)   # fit to beam at center, then roll to corners for later convolution step
+            except ImportError:
+                print 'Restoring image with peak of beam...'
+                kernel = n.where(beam[0] >= 0.4*beam[0].max(), beam[0], 0.)  # take only peak (gaussian part) pixels of beam image
+
             restored = aipy.img.convolve2d(clean, kernel)
             image_restored = (restored + dd['res']).real/beamgain
             image_final = image_restored
@@ -689,7 +708,7 @@ class pipe_msint(msreader):
 
             for trip in range(len(triples)):
                 ij, jk, ki = triples[trip]
-                self.bispectra[i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)  # Stokes I bispectrum. should be ok for multipol data...
+                self.bispectra[i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)  # Stokes I bispectrum. Note we are averaging after forming bispectrum, so not technically a Stokes I bispectrum.
 
     def detect_bispectra(self, sigma=5., tol=1.3, show=0, save=0):
         """Function to search for a transient in a bispectrum lightcurve.
@@ -960,7 +979,7 @@ In practice, this search involves plotting the mean bispectrum versus time and s
 
                 for trip in range(len(triples)):
                     ij, jk, ki = triples[trip]
-                    self.bispectra[d, i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)  # Stokes I bispectrum. should be ok for multipol data...
+                    self.bispectra[d, i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)    # Stokes I bispectrum. Note we are averaging after forming bispectrum, so not technically a Stokes I bispectrum.
             print 'dedispersed for ', self.dmarr[d]
 
     def detect_bispectra(self, sigma=5., tol=1.3, show=0, save=0):
@@ -1278,7 +1297,7 @@ class pipe_mirint(mirreader):
 
             for trip in range(len(triples)):
                 ij, jk, ki = triples[trip]
-                self.bispectra[i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)  # Stokes I bispectrum. should be ok for multipol data...
+                self.bispectra[i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)   # Stokes I bispectrum. Note we are averaging after forming bispectrum, so not technically a Stokes I bispectrum.
 
     def detect_bispectra(self, sigma=5., tol=1.3, show=0, save=0):
         """Function to search for a transient in a bispectrum lightcurve.
@@ -1544,7 +1563,7 @@ In practice, this search involves plotting the mean bispectrum versus time and s
 
                 for trip in range(len(triples)):
                     ij, jk, ki = triples[trip]
-                    self.bispectra[d, i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)  # Stokes I bispectrum. should be ok for multipol data...
+                    self.bispectra[d, i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)  # Stokes I bispectrum. Note we are averaging after forming bispectrum, so not technically a Stokes I bispectrum.
             print 'dedispersed for ', self.dmarr[d]
 
     def detect_bispectra(self, sigma=5., tol=1.3, show=0, save=0):
@@ -1906,5 +1925,3 @@ def sigma_clip(arr,sigma=3):
         std = arr.std()
         cliparr = n.where((arr < mean + sigma*std) & (arr > mean - sigma*std))[0]
     return mean - sigma*std, mean + sigma*std
-
-
