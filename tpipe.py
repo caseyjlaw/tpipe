@@ -3,7 +3,7 @@
 """
 tpipe.py --- read and visualize visibility data to search for transients
 Generalization of evlavis, etc.
-Can read MS or Miriad formatted data. Looks for any of the following:
+Can read MS or Miriad formatted data. Will try to import the following:
 - CASA and pyrap for MS reading
 - miriad-python for Miriad reading
 - aipy for imaging numpy array data
@@ -46,15 +46,20 @@ except ImportError:
     print 'No aipy available. Can\'t image in Python.'
 
 
-class reader:
+class Reader:
     """ Master class with basic functions.
-    params defines various tunable parameters for reading data and running pipelines. 
-    Set your own set of parameters by adding to the params dictionary.
+    self.params defines various tunable parameters for reading data and running pipelines. 
+    A "profile" is a set of params that can be hardwired for easy access.
+    Can also set parameters giving them as keyword arguments (e.g., "chans=n.array(range(100,110))")
     """
+
+    def __init__(self):
+        raise NotImplementedError('Cannot instantiate class directly. Use \'pipe\' subclasses.')
 
     def set_params(self, profile='default', kargs={}):
         """ Method called by __init__ in subclasses. This sets all parameters needed elsewhere.
-        Can optionally set up range of defaults called with name.
+        Can optionally use a profile which is a set of params.
+        Also can set key directly as keyword=value pair.
         """
 
         # parameters used by various subclasses
@@ -91,8 +96,11 @@ class reader:
         # may further modify parameters manually
         if len(kargs) > 0:
             for key in kargs:
-                self.params[profile][key] = kargs[key]
-
+                if key in self.params[profile].keys():
+                    self.params[profile][key] = kargs[key]
+                else:
+                    print '%s not a standard key. Will not be used.' % (key)
+                    
         self.pathout = self.params[profile]['pathout']
         self.chans = self.params[profile]['chans']
         self.dmarr = self.params[profile]['dmarr']
@@ -188,7 +196,7 @@ class reader:
         return self.blarr,bllen
 
     def imagetrack(self, track, i=0, pol='i', size=48000, res=500, clean=True, gain=0.01, tol=1e-4, newbeam=0, save=0):
-        """ Image a track returned by tracksub of dimensions (npol, nbl, nchan).
+        """ Use apiy to image a track returned by tracksub of dimensions (npol, nbl, nchan).
         int is used to select uvw coordinates for track. default is first int.
         pol can be 'i' for a Stokes I image (mean over pol dimension) or a pol index.
         default params size and res are good for 1.4 GHz VLA, C-config image.
@@ -264,8 +272,7 @@ class reader:
 
     def phaseshift(self, l, m):
         """ Function to apply phase shift to (l,m) coordinates of data array.
-        Should return new data array.
-        This should be used before .mean(axis=bl) step is done to produce a new spectrogram.
+        Sets data and dataph arrays to new values.
         """
 
         newdata = n.zeros(shape=self.data.shape, dtype='complex')
@@ -315,15 +322,15 @@ class reader:
         return n.array(bltrips)
 
 
-
-class mirreader(reader):
-    """ Class for reading Miriad format data with miriad-python
+class MiriadReader(Reader):
+    """ Class for reading Miriad format data with miriad-python.
     """
+
+    def __init__(self):
+        raise NotImplementedError('Cannot instantiate class directly. Use \'pipe\' subclasses.')
 
     def read(self, file, nints, nskip, nocal, nopass):
         """ Reads in Miriad data using miriad-python.
-        Seems to have some small time (~1 integration) errors in light curves and spectrograms, 
-        as compared to CASA-read data.
         """
 
         self.file = file
@@ -438,15 +445,167 @@ class mirreader(reader):
         print 'Dataph min, max:'
         print self.min, self.max
 
+    def writetrack(self, dmbin, tbin, tshift=0, bgwindow=0, show=0, pol=0):
+        """ **Not tested recently** Writes data from track out as miriad visibility file.
+        Alternative to writetrack that uses stored, approximate preamble used from start of pulse, not middle.
+        Optional background subtraction bl-by-bl over bgwindow integrations. Note that this is bgwindow *dmtracks* so width is bgwindow+track width
+        """
 
-class msreader(reader):
-    """ Class for reading MS data with either CASA or (eventually) pyrap
+        # create bgsub data
+        datadiffarr = self.tracksub(dmbin, tbin, bgwindow=bgwindow)
+        if n.shape(datadiffarr) == n.shape([0]):    # if track doesn't cross band, ignore this iteration
+            return 0
+
+        data = n.zeros(self.nchan, dtype='complex64')  # default data array. gets overwritten.
+        data0 = n.zeros(self.nchan, dtype='complex64')  # zero data array for flagged bls
+        flags = n.zeros(self.nchan, dtype='bool')
+
+        # define output visibility file names
+        outname = string.join(self.file.split('.')[:-1], '.') + '.' + str(self.nskip/self.nbl) + '-' + 'dm' + str(dmbin) + 't' + str(tbin) + '.mir'
+        print outname
+        vis = miriad.VisData(self.file,)
+
+        int0 = int((tbin + tshift) * self.nbl)
+        flags0 = []
+        i = 0
+        for inp, preamble, data, flags in vis.readLowlevel ('dsl3', False, nocal=True, nopass=True):
+            if i == 0:
+                # prep for temp output vis file
+                shutil.rmtree(outname, ignore_errors=True)
+                out = miriad.VisData(outname)
+                dOut = out.open ('c')
+
+                # set variables
+                dOut.setPreambleType ('uvw', 'time', 'baseline')
+                dOut.writeVarInt ('nants', self.nants0)
+                dOut.writeVarFloat ('inttime', self.inttime0)
+                dOut.writeVarInt ('nspect', self.nspect0)
+                dOut.writeVarDouble ('sdf', self.sdf0)
+                dOut.writeVarInt ('nwide', self.nwide0)
+                dOut.writeVarInt ('nschan', self.nschan0)
+                dOut.writeVarInt ('ischan', self.ischan0)
+                dOut.writeVarDouble ('sfreq', self.sfreq0)
+                dOut.writeVarDouble ('restfreq', self.restfreq0)
+                dOut.writeVarInt ('pol', self.pol0)
+#                inp.copyHeader (dOut, 'history')
+                inp.initVarsAsInput (' ') # ???
+                inp.copyLineVars (dOut)
+            if i < self.nbl:
+                flags0.append(flags.copy())
+                i = i+1
+            else:
+                break
+
+        l = 0
+        for i in range(len(flags0)):  # iterate over baselines
+            # write out track, if not flagged
+            if n.any(flags0[i]):
+                k = 0
+                for j in range(self.nchan):
+                    if j in self.chans:
+                        data[j] = datadiffarr[pol, l, k]
+#                        flags[j] = flags0[i][j]
+                        k = k+1
+                    else:
+                        data[j] = 0 + 0j
+#                        flags[j] = False
+                l = l+1
+            else:
+                data = data0
+#                flags = n.zeros(self.nchan, dtype='bool')
+
+            dOut.write (self.preamble[int0 + i], data, flags0[i])
+
+        dOut.close ()
+        return 1
+
+    def writetrack2(self, dmbin, tbin, tshift=0, bgwindow=0, show=0, pol=0):
+        """ **Not tested recently** Writes data from track out as miriad visibility file.
+        Alternative to writetrack that uses stored, approximate preamble used from start of pulse, not middle.
+        Optional background subtraction bl-by-bl over bgwindow integrations. Note that this is bgwindow *dmtracks* so width is bgwindow+track width
+        """
+
+        # create bgsub data
+        datadiffarr = self.tracksub(dmbin, tbin, bgwindow=bgwindow)
+        if n.shape(datadiffarr) == n.shape([0]):    # if track doesn't cross band, ignore this iteration
+            return 0
+
+        data = n.zeros(self.nchan, dtype='complex64')  # default data array. gets overwritten.
+        data0 = n.zeros(self.nchan, dtype='complex64')  # zero data array for flagged bls
+        flags = n.zeros(self.nchan, dtype='bool')
+
+        # define output visibility file names
+        outname = string.join(self.file.split('.')[:-1], '.') + '.' + str(self.nskip/self.nbl) + '-' + 'dm' + str(dmbin) + 't' + str(tbin) + '.mir'
+        print outname
+        vis = miriad.VisData(self.file,)
+
+        int0 = int((tbin + tshift) * self.nbl)
+        flags0 = []
+        i = 0
+        for inp, preamble, data, flags in vis.readLowlevel ('dsl3', False, nocal=True, nopass=True):
+            if i == 0:
+                # prep for temp output vis file
+                shutil.rmtree(outname, ignore_errors=True)
+                out = miriad.VisData(outname)
+                dOut = out.open ('c')
+
+                # set variables
+                dOut.setPreambleType ('uvw', 'time', 'baseline')
+                dOut.writeVarInt ('nants', self.nants0)
+                dOut.writeVarFloat ('inttime', self.inttime0)
+                dOut.writeVarInt ('nspect', self.nspect0)
+                dOut.writeVarDouble ('sdf', self.sdf0)
+                dOut.writeVarInt ('nwide', self.nwide0)
+                dOut.writeVarInt ('nschan', self.nschan0)
+                dOut.writeVarInt ('ischan', self.ischan0)
+                dOut.writeVarDouble ('sfreq', self.sfreq0)
+                dOut.writeVarDouble ('restfreq', self.restfreq0)
+                dOut.writeVarInt ('pol', self.pol0)
+#                inp.copyHeader (dOut, 'history')
+                inp.initVarsAsInput (' ') # ???
+                inp.copyLineVars (dOut)
+            if i < self.nbl:
+                flags0.append(flags.copy())
+                i = i+1
+            else:
+                break
+
+        l = 0
+        for i in range(len(flags0)):  # iterate over baselines
+            # write out track, if not flagged
+            if n.any(flags0[i]):
+                k = 0
+                for j in range(self.nchan):
+                    if j in self.chans:
+                        data[j] = datadiffarr[pol, l, k]
+#                        flags[j] = flags0[i][j]
+                        k = k+1
+                    else:
+                        data[j] = 0 + 0j
+#                        flags[j] = False
+                l = l+1
+            else:
+                data = data0
+#                flags = n.zeros(self.nchan, dtype='bool')
+
+            dOut.write (self.preamble[int0 + i], data, flags0[i])
+
+        dOut.close ()
+        return 1
+
+
+class MSReader(Reader):
+    """ Class for reading MS data with either CASA. (Will eventually use pyrap.)
     """
+
+    def __init__(self):
+        raise NotImplementedError('Cannot instantiate class directly. Use \'pipe\' subclasses.')
 
     def read(self, file, nints, nskip, spw, selectpol, scan, datacol):
         """ Reads in Measurement Set data using CASA.
         spw is list of subbands. zero-based.
         Scan is zero-based selection based on scan order, not actual scan number.
+        selectpol is list of polarization strings (e.g., ['RR','LL'])
         """
         self.file = file
         self.scan = scan
@@ -589,23 +748,15 @@ class msreader(reader):
         self.reltime = ti - ti[0]
 
 
-class pipe_msint(msreader):
-    """ Create pipeline object for reading in MS data and doing integration-based analysis without dedispersion.
-    nints is the number of integrations to read.
-    nskip is the number of integrations to skip before reading.
-    spw is list of spectral windows to read from MS.
-    selectpol is list of polarization product names for reading from MS
-    scan is zero-based selection of scan for reading from MS. It is based on scan order, not actual scan number.
-    datacol is the name of the data column name to read from the MS.
+class ProcessByIntegration():
+    """ Class defines methods for pipeline processing for integration-based (no dispersion) transients searches.
     """
 
-    def __init__(self, file, profile='default', nints=1000, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
-        self.set_params(profile=profile, kargs=kargs)
-        self.read(file=file, nints=nints, nskip=nskip, spw=spw, selectpol=selectpol, scan=scan, datacol=datacol)
-        self.prep()
+    def __init__(self):
+        raise NotImplementedError('Cannot instantiate class directly. Use \'pipe\' subclasses.')
 
     def prep(self):
-        """ Sets up tracks used to speed up dedispersion code.
+        """ Sets up tracks used to select data in time. Setting them early helped speed up dedispersion done elsewhere.
         """
         self.track0 = self.track(0.)
         self.twidth = 0
@@ -683,10 +834,31 @@ class pipe_msint(msreader):
         return n.transpose(datadiffarr, axes=[2,1,0])
 
     def make_bispectra(self, bgwindow=4):
-        """
-        Makes numpy array of bispectra for each integration. Subtracts visibilities in time in bgwindow.
-        """
+        """ Makes numpy array of bispectra for each integration. Subtracts visibilities in time in bgwindow.
 
+        Steps in Bispectrum Transient Detection Algorithm
+
+        1) Collect visibility spectra for some length of time. In Python, I read data into an array with a shape of (n_int, n_chan, n_bl).
+
+        2) Prepare visibility spectra to create bispectra. Optionally, one can form dedispersed spectra for each baseline. A simpler start (and probably more relevant for LOFAR) would be to instead select a single integration from the data array described above. Either way, this step changes the data shape to (n_chan, n_bl).
+
+        3) Subtract visibilities in time. If the sky has many (or complex) sources, the bispectrum is hard to interpret. Subtracting neighboring visibilities in time (or a rolling mean, like v_t2 - (v_t1+v_t3)/2) removes most constant emission. The only trick is that this assumes that the array has not rotated much and that gain and other effects have not changed. This should preserve the data shape as (n_chan, n_bl).
+
+        4) Calculate mean visibility for each baseline. After subtracting in time, one can measure the mean visibility across the band. This reduces the shape to (n_bl).
+
+        5) Form a bispectrum for every closed triple in the array. There are a total of n_a * (n_a-1) * (n_a-2) / 6 possible closed triples in the array, where n_a is the number of antennas. One way to form all bispectra is to iterate over antenna indices like this:
+for i in range(0, len(n_a)-2):
+  for j in range(i, len(n_a)-1):
+    for k in range(k, len(n_a)):
+      bl1, bl2, bl3 = ant2bl(i, j, k)
+      bisp = vis[bl1] * vis[bl2] * vis[bl3]
+
+      As you can see, this loop needs a function to convert antenna triples to baseline triples (I call it "ant2bl" here). That is, for antennas (i, j, k), you need (bl_ij, bl_jk, bl_ki). Note that the order of the last baseline is flipped; this is a way of showing that the way you "close" a loop is by tracing a single line around all three baselines. This step changes the basic data product from a shape of (n_bl) to (n_tr). 
+
+      6) Search the set of bispectra for sign of a source. Each bispectrum is complex, but if there is a point source in the (differenced) data, all bispectra will respond in the same way. This happens regardless of the location in the field of view.
+      The mean of all bispectra will scale with the source brightness to the third power, since it is formed from the product of three visibilities. Oddly, the standard deviation of the bispectra will *also* change with the source brightness, due to something called "self noise". The standard deviation of bispectra in the real-imaginary plane should be sqrt(3) S^2 sigma_bl, where S is the source brightness and sigma_bl is the noise on an individual baseline.
+      In practice, this search involves plotting the mean bispectrum versus time and searching for large deviations. At the same time, a plot of mean versus standard deviation of bispectra will show whether any significant deviation obeys the expected self-noise scaling. That scaling is only valid for a single point source in the field of view, which is what you expect for a fast transient. Any other behavior would be either noise-like or caused by RFI. In particular, RFI will look like a transient, but since it does not often look like a point source, it can be rejected in the plot of mean vs. standard deviation of bispectra. This is a point that I've demonstrated on a small scale, but would needs more testing, since RFI is so varied.
+        """
 
         bisp = lambda d, ij, jk, ki: d[:,ij] * d[:,jk] * n.conj(d[:,ki])    # bispectrum for pol data
 #        bisp = lambda d, ij, jk, ki: n.complex(d[ij] * d[jk] * n.conj(d[ki]))  # without pol axis
@@ -816,30 +988,21 @@ class pipe_msint(msreader):
         """Like that of dispersion-based classes, but integration-based.
         Not yet implemented.
         """
-        pass
+        raise NotImplementedError('For now, you could instead used dispersion code with dmarr=[0.]...')
     
     def detect_phasedbeam(self):
         """Like that of dispersion-based classes, but integration-based.
         Not yet implemented.
         """
-        pass
+        raise NotImplementedError('For now, you could instead used dispersion code with dmarr=[0.]...')
 
 
-class pipe_msdisp(msreader):
-    """ Create pipeline object for reading in MS data and doing integration-based analysis with dedispersion.
-    nints is the number of integrations to read.
-    nskip is the number of integrations to skip before reading.
-    nocal,nopass are options for applying calibration while reading Miriad data.
-    spw is list of spectral windows to read from MS.
-    selectpol is list of polarization product names for reading from MS
-    scan is zero-based selection of scan for reading from MS. It is based on scan order, not actual scan number.
-    datacol is the name of the data column name to read from the MS.
+class ProcessByDispersion():
+    """ Class defines methods for pipeline processing for dispersion-based transients searches.
     """
 
-    def __init__(self, file, profile='default', nints=1000, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
-        self.set_params(profile=profile, kargs=kargs)
-        self.read(file=file, nints=nints, nskip=nskip, spw=spw, selectpol=selectpol, scan=scan, datacol=datacol)
-        self.prep()
+    def __init__(self):
+        raise NotImplementedError('Cannot instantiate class directly. Use \'pipe\' subclasses.')
 
     def prep(self):
         """ Sets up tracks used to speed up dedispersion code.
@@ -926,28 +1089,30 @@ class pipe_msdisp(msreader):
         return n.transpose(datadiffarr, axes=[2,1,0])
 
     def make_bispectra(self, bgwindow=4):
-        """ Steps in Bispectrum Transient Detection Algorithm
+        """ Makes numpy array of bispectra for each integration. Subtracts visibilities in time in bgwindow.
 
-1) Collect visibility spectra for some length of time. In Python, I read data into an array with a shape of (n_int, n_chan, n_bl).
+        Steps in Bispectrum Transient Detection Algorithm
 
-2) Prepare visibility spectra to create bispectra. Optionally, one can form dedispersed spectra for each baseline. A simpler start (and probably more relevant for LOFAR) would be to instead select a single integration from the data array described above. Either way, this step changes the data shape to (n_chan, n_bl).
+        1) Collect visibility spectra for some length of time. In Python, I read data into an array with a shape of (n_int, n_chan, n_bl).
 
-3) Subtract visibilities in time. If the sky has many (or complex) sources, the bispectrum is hard to interpret. Subtracting neighboring visibilities in time (or a rolling mean, like v_t2 - (v_t1+v_t3)/2) removes most constant emission. The only trick is that this assumes that the array has not rotated much and that gain and other effects have not changed. This should preserve the data shape as (n_chan, n_bl).
+        2) Prepare visibility spectra to create bispectra. Optionally, one can form dedispersed spectra for each baseline. A simpler start (and probably more relevant for LOFAR) would be to instead select a single integration from the data array described above. Either way, this step changes the data shape to (n_chan, n_bl).
 
-4) Calculate mean visibility for each baseline. After subtracting in time, one can measure the mean visibility across the band. This reduces the shape to (n_bl).
+        3) Subtract visibilities in time. If the sky has many (or complex) sources, the bispectrum is hard to interpret. Subtracting neighboring visibilities in time (or a rolling mean, like v_t2 - (v_t1+v_t3)/2) removes most constant emission. The only trick is that this assumes that the array has not rotated much and that gain and other effects have not changed. This should preserve the data shape as (n_chan, n_bl).
 
-5) Form a bispectrum for every closed triple in the array. There are a total of n_a * (n_a-1) * (n_a-2) / 6 possible closed triples in the array, where n_a is the number of antennas. One way to form all bispectra is to iterate over antenna indices like this:
+        4) Calculate mean visibility for each baseline. After subtracting in time, one can measure the mean visibility across the band. This reduces the shape to (n_bl).
+
+        5) Form a bispectrum for every closed triple in the array. There are a total of n_a * (n_a-1) * (n_a-2) / 6 possible closed triples in the array, where n_a is the number of antennas. One way to form all bispectra is to iterate over antenna indices like this:
 for i in range(0, len(n_a)-2):
   for j in range(i, len(n_a)-1):
     for k in range(k, len(n_a)):
       bl1, bl2, bl3 = ant2bl(i, j, k)
       bisp = vis[bl1] * vis[bl2] * vis[bl3]
 
-As you can see, this loop needs a function to convert antenna triples to baseline triples (I call it "ant2bl" here). That is, for antennas (i, j, k), you need (bl_ij, bl_jk, bl_ki). Note that the order of the last baseline is flipped; this is a way of showing that the way you "close" a loop is by tracing a single line around all three baselines. This step changes the basic data product from a shape of (n_bl) to (n_tr). 
+      As you can see, this loop needs a function to convert antenna triples to baseline triples (I call it "ant2bl" here). That is, for antennas (i, j, k), you need (bl_ij, bl_jk, bl_ki). Note that the order of the last baseline is flipped; this is a way of showing that the way you "close" a loop is by tracing a single line around all three baselines. This step changes the basic data product from a shape of (n_bl) to (n_tr). 
 
-6) Search the set of bispectra for sign of a source. Each bispectrum is complex, but if there is a point source in the (differenced) data, all bispectra will respond in the same way. This happens regardless of the location in the field of view.
-The mean of all bispectra will scale with the source brightness to the third power, since it is formed from the product of three visibilities. Oddly, the standard deviation of the bispectra will *also* change with the source brightness, due to something called "self noise". The standard deviation of bispectra in the real-imaginary plane should be sqrt(3) S^2 sigma_bl, where S is the source brightness and sigma_bl is the noise on an individual baseline.
-In practice, this search involves plotting the mean bispectrum versus time and searching for large deviations. At the same time, a plot of mean versus standard deviation of bispectra will show whether any significant deviation obeys the expected self-noise scaling. That scaling is only valid for a single point source in the field of view, which is what you expect for a fast transient. Any other behavior would be either noise-like or caused by RFI. In particular, RFI will look like a transient, but since it does not often look like a point source, it can be rejected in the plot of mean vs. standard deviation of bispectra. This is a point that I've demonstrated on a small scale, but would needs more testing, since RFI is so varied.
+      6) Search the set of bispectra for sign of a source. Each bispectrum is complex, but if there is a point source in the (differenced) data, all bispectra will respond in the same way. This happens regardless of the location in the field of view.
+      The mean of all bispectra will scale with the source brightness to the third power, since it is formed from the product of three visibilities. Oddly, the standard deviation of the bispectra will *also* change with the source brightness, due to something called "self noise". The standard deviation of bispectra in the real-imaginary plane should be sqrt(3) S^2 sigma_bl, where S is the source brightness and sigma_bl is the noise on an individual baseline.
+      In practice, this search involves plotting the mean bispectrum versus time and searching for large deviations. At the same time, a plot of mean versus standard deviation of bispectra will show whether any significant deviation obeys the expected self-noise scaling. That scaling is only valid for a single point source in the field of view, which is what you expect for a fast transient. Any other behavior would be either noise-like or caused by RFI. In particular, RFI will look like a transient, but since it does not often look like a point source, it can be rejected in the plot of mean vs. standard deviation of bispectra. This is a point that I've demonstrated on a small scale, but would needs more testing, since RFI is so varied.
         """
 
         bisp = lambda d, ij, jk, ki: d[:,ij] * d[:,jk] * n.conj(d[:,ki])    # bispectrum for pol data
@@ -984,7 +1149,7 @@ In practice, this search involves plotting the mean bispectrum versus time and s
             print 'dedispersed for ', self.dmarr[d]
 
     def detect_bispectra(self, sigma=5., tol=1.3, show=0, save=0):
-        """ Function to detect source in bispectra
+        """ Function to detect transient in bispectra
         sigma gives the threshold for SNR_bisp (apparent). 
         tol gives the amount of tolerance in the sigma_b cut for point-like sources (rfi filter).
         save=0 is no saving, save=1 is save with default name, save=<string>.png uses custom name (must include .png). 
@@ -1182,11 +1347,47 @@ In practice, this search involves plotting the mean bispectrum versus time and s
         return peaks,arr[peaks],arr_snr[peaks]
 
 
-class pipe_mirint(mirreader):
+class pipe_msint(MSReader, ProcessByIntegration):
+    """ Create pipeline object for reading in MS data and doing integration-based analysis without dedispersion.
+    nints is the number of integrations to read.
+    nskip is the number of integrations to skip before reading.
+    spw is list of spectral windows to read from MS.
+    selectpol is list of polarization product names for reading from MS
+    scan is zero-based selection of scan for reading from MS. It is based on scan order, not actual scan number.
+    datacol is the name of the data column name to read from the MS.
+    Can also set some parameters as key=value pairs.
+    """
+
+    def __init__(self, file, profile='default', nints=1000, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
+        self.set_params(profile=profile, kargs=kargs)
+        self.read(file=file, nints=nints, nskip=nskip, spw=spw, selectpol=selectpol, scan=scan, datacol=datacol)
+        self.prep()
+
+
+class pipe_msdisp(MSReader, ProcessByDispersion):
+    """ Create pipeline object for reading in MS data and doing integration-based analysis with dedispersion.
+    nints is the number of integrations to read.
+    nskip is the number of integrations to skip before reading.
+    nocal,nopass are options for applying calibration while reading Miriad data.
+    spw is list of spectral windows to read from MS.
+    selectpol is list of polarization product names for reading from MS
+    scan is zero-based selection of scan for reading from MS. It is based on scan order, not actual scan number.
+    datacol is the name of the data column name to read from the MS.
+    Can also set some parameters as key=value pairs.
+    """
+
+    def __init__(self, file, profile='default', nints=1000, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
+        self.set_params(profile=profile, kargs=kargs)
+        self.read(file=file, nints=nints, nskip=nskip, spw=spw, selectpol=selectpol, scan=scan, datacol=datacol)
+        self.prep()
+
+
+class pipe_mirint(MiriadReader, ProcessByIntegration):
     """ Create pipeline object for reading in Miriad data and doing integration-based analysis without dedispersion.
     nints is the number of integrations to read.
     nskip is the number of integrations to skip before reading.
     nocal,nopass are options for applying calibration while reading Miriad data.
+    Can also set some parameters as key=value pairs.
     """
 
     def __init__(self, file, profile='default', nints=1000, nskip=0, nocal=False, nopass=False, **kargs):
@@ -1194,726 +1395,19 @@ class pipe_mirint(mirreader):
         self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
         self.prep()
 
-    def prep(self):
-        """ Sets up tracks used to speed up dedispersion code.
-        """
-        self.track0 = self.track(0.)
-        self.twidth = 0
-        for k in self.track0[1]:
-            self.twidth = max(self.twidth, len(n.where(n.array(self.track0[1]) == k)[0]))
 
-    def track(self, t0 = 0., show=0):
-        """ Takes time offset from first integration in seconds.
-        t0 defined at first (unflagged) channel.
-        Returns an array of (timebin, channel) to select from the data array.
-        """
-
-        reltime = self.reltime
-        chans = self.chans
-        tint = self.inttime
-
-        # calculate pulse time and duration
-        pulset = t0
-        pulsedt = self.pulsewidth[0]   # dtime in seconds. just take one channel, since there is no freq dep
-
-        timebin = []
-        chanbin = []
-
-        ontime = n.where(((pulset + pulsedt) >= reltime - tint/2.) & (pulset <= reltime + tint/2.))
-        for ch in range(len(chans)):
-            timebin = n.concatenate((timebin, ontime[0]))
-            chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype='int'))))
-
-        track = (list(timebin), list(chanbin))
-
-        if show:
-            p.plot(track[0], track[1], 'w*')
-
-        return track
-
-    def tracksub(self, tbin, bgwindow = 0):
-        """ Creates a background-subtracted set of visibilities.
-        For a given track (i.e., an integration number) and bg window, tracksub subtractes a background in time and returns an array with new data.
-        """
-
-        data = self.data
-        track_t,track_c = self.track0  # get track time and channel arrays
-        trackon = (list(n.array(track_t)+tbin), track_c)   # create new track during integration of interest
-        dataon = data[trackon[0], :, trackon[1]]
-
-        # set up bg track
-        if bgwindow:
-            # measure max width of pulse (to avoid in bgsub)
-            bgrange = range(-bgwindow/2 + tbin, tbin) + range(tbin, bgwindow/2 + tbin)
-            for k in bgrange:     # build up super track for background subtraction
-                if bgrange.index(k) == 0:   # first time through
-                    trackoff = (list(n.array(track_t)+k), track_c)
-                else:    # then extend arrays by next iterations
-                    trackoff = (trackoff[0] + list(n.array(track_t)+k), list(trackoff[1]) + list(track_c))
-
-            dataoff = data[trackoff[0], :, trackoff[1]]
-
-        datadiffarr = n.zeros((self.nchan, self.nbl, self.npol),dtype='complex')
-
-        # compress time axis, then subtract on and off tracks
-        for ch in n.unique(trackon[1]):
-            indon = n.where(trackon[1] == ch)
-            meanon = dataon[indon].mean(axis=0)
-
-            if bgwindow:
-                indoff = n.where(trackoff[1] == ch)
-                meanoff = dataoff[indoff].mean(axis=0)
-                datadiffarr[ch] = meanon - meanoff
-                zeros = n.where( (meanon == 0j) | (meanoff == 0j) )  # find baselines and pols with zeros for meanon or meanoff
-                datadiffarr[ch][zeros] = 0j    # set missing data to zero # hack! but could be ok if we can ignore zeros later...
-            else:
-                datadiffarr[ch] = meanon
-
-        return n.transpose(datadiffarr, axes=[2,1,0])
-
-    def make_bispectra(self, bgwindow=4):
-        """
-        Makes numpy array of bispectra for each integration. Subtracts visibilities in time in bgwindow.
-        """
-
-
-        bisp = lambda d, ij, jk, ki: d[:,ij] * d[:,jk] * n.conj(d[:,ki])    # bispectrum for pol data
-#        bisp = lambda d, ij, jk, ki: n.complex(d[ij] * d[jk] * n.conj(d[ki]))  # without pol axis
-
-        triples = self.make_triples()
-
-        self.bispectra = n.zeros((len(self.data), len(triples)), dtype='complex')
-        truearr = n.ones( (self.npol, self.nbl, self.nchan))
-        falsearr = n.zeros( (self.npol, self.nbl, self.nchan))
-
-        for i in range(bgwindow/2, len(self.data)-(bgwindow/2+1)):
-            diff = self.tracksub(i, bgwindow=bgwindow)
-
-            if len(n.shape(diff)) == 1:    # no track
-                continue
-
-            weightarr = n.where(diff != 0j, truearr, falsearr)  # ignore zeros in mean across channels # bit of a hack
-
-            try:
-                diffmean = n.average(diff, axis=2, weights=weightarr)
-            except ZeroDivisionError:
-                diffmean = n.mean(diff, axis=2)    # if all zeros, just make mean # bit of a hack
-
-            for trip in range(len(triples)):
-                ij, jk, ki = triples[trip]
-                self.bispectra[i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)   # Stokes I bispectrum. Note we are averaging after forming bispectrum, so not technically a Stokes I bispectrum.
-
-    def detect_bispectra(self, sigma=5., tol=1.3, show=0, save=0):
-        """Function to search for a transient in a bispectrum lightcurve.
-        Designed to be used by bisplc function or easily fed the output of that function.
-        sigma gives the threshold for SNR_bisp (apparent). 
-        tol gives the amount of tolerance in the sigma_b cut for point-like sources (rfi filter).
-        Returns the SNR and integration number of any candidate events.
-        save=0 is no saving, save=1 is save with default name, save=<string>.png uses custom name (must include .png). 
-        """
-        try:
-            ba = self.bispectra
-        except AttributeError:
-            print 'Need to make bispectra first.'
-            return
-
-        ntr = lambda num: num*(num-1)*(num-2)/6.  # theoretical number of triples
-#        ntr = lambda num: n.mean([len(n.where(ba[i] != 0j)[0]) for i in range(len(ba))])   # consider possibility of zeros in data and take mean number of good triples over all times
-
-        # using s=S/Q
-#        mu = lambda s: s/(1+s)  # for independent bispectra, as in kulkarni 1989
-        mu = lambda s: 1.  # for bispectra at high S/N from visibilities?
-        sigbQ3 = lambda s: n.sqrt((1 + 3*mu(s)**2) + 3*(1 + mu(s)**2)*s**2 + 3*s**4)  # from kulkarni 1989, normalized by Q**3, also rogers et al 1995
-        s = lambda basnr, nants: (2.*basnr/n.sqrt(ntr(nants)))**(1/3.)
-
-        # measure SNR_bl==Q from sigma clipped times with normal mean and std of bispectra. put into time,dm order
-        bamean = ba.real.mean(axis=1)
-        bastd = ba.real.std(axis=1)
-
-        (meanmin,meanmax) = sigma_clip(bamean)  # remove rfi
-        (stdmin,stdmax) = sigma_clip(bastd)  # remove rfi
-        clipped = n.where((bamean > meanmin) & (bamean < meanmax) & (bastd > stdmin) & (bastd < stdmax) & (bamean != 0.0))[0]  # remove rf
-
-        bameanstd = ba[clipped].real.mean(axis=1).std()
-        basnr = bamean/bameanstd
-        Q = ((bameanstd/2.)*n.sqrt(ntr(self.nants)))**(1/3.)
-#        Q = n.median( bastd[clipped]**(1/3.) )              # alternate for Q
-#        Q = sigt0toQ(bameanstd, self.nants)              # alternate for Q
-        print 'Noise per baseline (system units), Q =', Q
-
-        # detect
-        cands = n.where( (bastd/Q**3 < tol*sigbQ3(s(basnr, self.nants))) & (basnr > sigma) )[0]  # define compact sources with good snr
-
-        # plot snrb lc and expected snr vs. sigb relation
-        if show or save:
-            p.figure(1)
-            ax = p.axes()
-            p.subplot(211)
-            p.title(str(self.nskip/self.nbl)+' nskip, ' + str(len(cands))+' candidates', transform = ax.transAxes)
-            p.plot(basnr, 'b.')
-            if len(cands) > 0:
-                p.plot(cands, basnr[cands], 'r*')
-                p.ylim(-2*basnr[cands].max(),2*basnr[cands].max())
-            p.xlabel('Integration')
-            p.ylabel('SNR$_{bisp}$')
-            p.subplot(212)
-            p.plot(bastd/Q**3, basnr, 'b.')
-
-            # plot reference theory lines
-            smax = s(basnr.max(), self.nants)
-            sarr = smax*n.arange(0,51)/50.
-            p.plot(sigbQ3(sarr), 1/2.*sarr**3*n.sqrt(ntr(self.nants)), 'k')
-            p.plot(tol*sigbQ3(sarr), 1/2.*sarr**3*n.sqrt(ntr(self.nants)), 'k--')
-            p.plot(bastd[cands]/Q**3, basnr[cands], 'r*')
-
-            if len(cands) > 0:
-                p.axis([0, tol*sigbQ3(s(basnr[cands].max(), self.nants)), -0.5*basnr[cands].max(), 1.1*basnr[cands].max()])
-
-                # show spectral modulation next to each point
-                for candint in cands:
-                    sm = n.single(round(self.specmod(candint),1))
-                    p.text(bastd[candint]/Q**3, basnr[candint], str(sm), horizontalalignment='right', verticalalignment='bottom')
-            p.xlabel('$\sigma_b/Q^3$')
-            p.ylabel('SNR$_{bisp}$')
-            if save:
-                if save == 1:
-                    savename = self.file.split('.')[:-1]
-                    savename.append(str(self.nskip/self.nbl) + '_bisp.png')
-                    savename = string.join(savename,'.')
-                elif type(save) == type('hi'):
-                    savename = save
-                print 'Saving file as ', savename
-                p.savefig(self.pathout+savename)
-
-        return basnr[cands], bastd[cands], cands
-
-    def specmod(self, tbin, bgwindow=4):
-        """Calculate spectral modulation for given track.
-        Spectral modulation is basically the standard deviation of a spectrum. 
-        This helps quantify whether the flux is located in a narrow number of channels or across all channels.
-        Narrow RFI has large (>5) modulation, while spectrally broad emission has low modulation.
-        See Spitler et al 2012 for details.
-        """
-
-        diff = self.tracksub(tbin, bgwindow=bgwindow)
-        bfspec = diff.mean(axis=0).real  # should be ok for multipol data...
-        sm = n.sqrt( ((bfspec**2).mean() - bfspec.mean()**2) / bfspec.mean()**2 )
-
-        return sm
-
-    def make_phasedbeam(self):
-        """Like that of dispersion-based classes, but integration-based.
-        Not yet implemented.
-        """
-        pass
-    
-    def detect_phasedbeam(self):
-        """Like that of dispersion-based classes, but integration-based.
-        Not yet implemented.
-        """
-        pass
-    
-
-class pipe_mirdisp(mirreader):
+class pipe_mirdisp(MiriadReader, ProcessByDispersion):
     """ Create pipeline object for reading in Miriad data and doing integration-based analysis without dedispersion.
     nints is the number of integrations to read.
     nskip is the number of integrations to skip before reading.
     nocal,nopass are options for applying calibration while reading Miriad data.
+    Can also set some parameters as key=value pairs.
     """
 
     def __init__(self, file, profile='default', nints=1000, nskip=0, nocal=False, nopass=False, **kargs):
         self.set_params(profile=profile, kargs=kargs)
         self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
         self.prep()
-
-    def prep(self):
-        """ Sets up tracks used to speed up dedispersion code.
-        """
-        # set up ur tracks (lol)
-        self.dmtrack0 = {}
-        self.twidths = {}
-        for dmbin in range(len(self.dmarr)):
-            self.dmtrack0[dmbin] = self.dmtrack(self.dmarr[dmbin],0)
-            self.twidths[dmbin] = 0
-            tt = self.twidths[dmbin]
-            for k in self.dmtrack0[dmbin][1]:
-                self.twidths[dmbin] = max(self.twidths[dmbin], len(n.where(n.array(self.dmtrack0[dmbin][1]) == k)[0]))
-
-    def dmtrack(self, dm = 0., t0 = 0., show=0):
-        """ Takes dispersion measure in pc/cm3 and time offset from first integration in seconds.
-        t0 defined at first (unflagged) channel. Need to correct by flight time from there to freq=0 for true time.
-        Returns an array of (timebin, channel) to select from the data array.
-        """
-
-        reltime = self.reltime
-        chans = self.chans
-        tint = self.inttime
-
-        # given freq, dm, dfreq, calculate pulse time and duration
-        pulset_firstchan = 4.2e-3 * dm * self.freq[len(self.chans)-1]**(-2)   # used to start dmtrack at highest-freq unflagged channel
-        pulset = 4.2e-3 * dm * self.freq**(-2) + t0 - pulset_firstchan  # time in seconds
-        pulsedt = n.sqrt( (8.3e-6 * dm * (1000*self.sdf) * self.freq**(-3))**2 + self.pulsewidth**2)   # dtime in seconds
-
-        timebin = []
-        chanbin = []
-
-        for ch in range(len(chans)):
-            ontime = n.where(((pulset[ch] + pulsedt[ch]) >= reltime - tint/2.) & (pulset[ch] <= reltime + tint/2.))
-            timebin = n.concatenate((timebin, ontime[0]))
-            chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype='int'))))
-
-        track = (list(timebin), list(chanbin))
-
-        if show:
-            p.plot(track[0], track[1], 'w*')
-
-        return track
-
-    def tracksub(self, dmbin, tbin, bgwindow = 0):
-        """ Creates a background-subtracted set of visibilities.
-        For a given track (i.e., an integration number) and bg window, tracksub subtractes a background in time and returns an array with new data.
-        Uses ur track for each dm, then shifts by tint. Faster than using n.where to find good integrations for each trial, but assumes int-aligned pulse.
-        """
-
-        data = self.data
-        track0,track1 = self.dmtrack0[dmbin]
-        trackon = (list(n.array(track0)+tbin), track1)
-        twidth = self.twidths[dmbin]
-        dataon = data[trackon[0], :, trackon[1]]
-
-        # set up bg track
-        if bgwindow:
-            # measure max width of pulse (to avoid in bgsub)
-            bgrange = range(-bgwindow/2 - twidth + tbin, - twidth + tbin) + range(twidth + tbin, twidth + bgwindow/2 + tbin)
-            for k in bgrange:     # build up super track for background subtraction
-                if bgrange.index(k) == 0:   # first time through
-                    trackoff = (list(n.array(track0)+k), track1)
-                else:    # then extend arrays by next iterations
-                    trackoff = (trackoff[0] + list(n.array(track0)+k), list(trackoff[1]) + list(track1))
-
-            dataoff = data[trackoff[0], :, trackoff[1]]
-
-        datadiffarr = n.zeros((self.nchan, self.nbl, self.npol),dtype='complex')
-        
-        # compress time axis, then subtract on and off tracks
-        for ch in n.unique(trackon[1]):
-            indon = n.where(trackon[1] == ch)
-            meanon = dataon[indon].mean(axis=0)
-
-            if bgwindow:
-                indoff = n.where(trackoff[1] == ch)
-                meanoff = dataoff[indoff].mean(axis=0)
-                datadiffarr[ch] = meanon - meanoff
-                zeros = n.where( (meanon == 0j) | (meanoff == 0j) )  # find baselines and pols with zeros for meanon or meanoff
-                datadiffarr[ch][zeros] = 0j    # set missing data to zero # hack! but could be ok if we can ignore zeros later...
-            else:
-                datadiffarr[ch] = meanon
-
-        return n.transpose(datadiffarr, axes=[2,1,0])
-
-    def make_bispectra(self, bgwindow=4):
-        """ Steps in Bispectrum Transient Detection Algorithm
-
-1) Collect visibility spectra for some length of time. In Python, I read data into an array with a shape of (n_int, n_chan, n_bl).
-
-2) Prepare visibility spectra to create bispectra. Optionally, one can form dedispersed spectra for each baseline. A simpler start (and probably more relevant for LOFAR) would be to instead select a single integration from the data array described above. Either way, this step changes the data shape to (n_chan, n_bl).
-
-3) Subtract visibilities in time. If the sky has many (or complex) sources, the bispectrum is hard to interpret. Subtracting neighboring visibilities in time (or a rolling mean, like v_t2 - (v_t1+v_t3)/2) removes most constant emission. The only trick is that this assumes that the array has not rotated much and that gain and other effects have not changed. This should preserve the data shape as (n_chan, n_bl).
-
-4) Calculate mean visibility for each baseline. After subtracting in time, one can measure the mean visibility across the band. This reduces the shape to (n_bl).
-
-5) Form a bispectrum for every closed triple in the array. There are a total of n_a * (n_a-1) * (n_a-2) / 6 possible closed triples in the array, where n_a is the number of antennas. One way to form all bispectra is to iterate over antenna indices like this:
-for i in range(0, len(n_a)-2):
-  for j in range(i, len(n_a)-1):
-    for k in range(k, len(n_a)):
-      bl1, bl2, bl3 = ant2bl(i, j, k)
-      bisp = vis[bl1] * vis[bl2] * vis[bl3]
-
-As you can see, this loop needs a function to convert antenna triples to baseline triples (I call it "ant2bl" here). That is, for antennas (i, j, k), you need (bl_ij, bl_jk, bl_ki). Note that the order of the last baseline is flipped; this is a way of showing that the way you "close" a loop is by tracing a single line around all three baselines. This step changes the basic data product from a shape of (n_bl) to (n_tr). 
-
-6) Search the set of bispectra for sign of a source. Each bispectrum is complex, but if there is a point source in the (differenced) data, all bispectra will respond in the same way. This happens regardless of the location in the field of view.
-The mean of all bispectra will scale with the source brightness to the third power, since it is formed from the product of three visibilities. Oddly, the standard deviation of the bispectra will *also* change with the source brightness, due to something called "self noise". The standard deviation of bispectra in the real-imaginary plane should be sqrt(3) S^2 sigma_bl, where S is the source brightness and sigma_bl is the noise on an individual baseline.
-In practice, this search involves plotting the mean bispectrum versus time and searching for large deviations. At the same time, a plot of mean versus standard deviation of bispectra will show whether any significant deviation obeys the expected self-noise scaling. That scaling is only valid for a single point source in the field of view, which is what you expect for a fast transient. Any other behavior would be either noise-like or caused by RFI. In particular, RFI will look like a transient, but since it does not often look like a point source, it can be rejected in the plot of mean vs. standard deviation of bispectra. This is a point that I've demonstrated on a small scale, but would needs more testing, since RFI is so varied.
-        """
-
-        bisp = lambda d, ij, jk, ki: d[:,ij] * d[:,jk] * n.conj(d[:,ki])    # bispectrum for pol data
-#        bisp = lambda d, ij, jk, ki: n.complex(d[ij] * d[jk] * n.conj(d[ki]))   # without pol axis
-
-        triples = self.make_triples()
-
-        # set up arrays for bispectrum and for weighting data (ignoring zeros)
-        self.bispectra = n.zeros((len(self.dmarr), len(self.data), len(triples)), dtype='complex')
-        truearr = n.ones( (self.npol, self.nbl, self.nchan))
-        falsearr = n.zeros( (self.npol, self.nbl, self.nchan))
-
-        # iterate over dm trials and integrations
-        for d in range(len(self.dmarr)):
-            twidth = n.round(self.twidths[d])
-            dmwidth = int(n.round(n.max(self.dmtrack0[d][0]) - n.min(self.dmtrack0[d][0])))
-
-            for i in range((bgwindow+twidth)/2, len(self.data)-( (bgwindow+twidth)/2+dmwidth+1 )):   # dmwidth avoided at end, others are split on front and back side of time iteration
-                diff = self.tracksub(d, i, bgwindow=bgwindow)
-
-                if len(n.shape(diff)) == 1:    # no track
-                    continue
-
-                weightarr = n.where(diff != 0j, truearr, falsearr)  # ignore zeros in mean across channels # bit of a hack
-
-                try:
-                    diffmean = n.average(diff, axis=2, weights=weightarr)
-                except ZeroDivisionError:
-                    diffmean = n.mean(diff, axis=2)    # if all zeros, just make mean # bit of a hack
-
-                for trip in range(len(triples)):
-                    ij, jk, ki = triples[trip]
-                    self.bispectra[d, i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)  # Stokes I bispectrum. Note we are averaging after forming bispectrum, so not technically a Stokes I bispectrum.
-            print 'dedispersed for ', self.dmarr[d]
-
-    def detect_bispectra(self, sigma=5., tol=1.3, show=0, save=0):
-        """ Function to detect source in bispectra
-        sigma gives the threshold for SNR_bisp (apparent). 
-        tol gives the amount of tolerance in the sigma_b cut for point-like sources (rfi filter).
-        save=0 is no saving, save=1 is save with default name, save=<string>.png uses custom name (must include .png). 
-        """
-
-        try:
-            ba = self.bispectra
-        except AttributeError:
-            print 'Need to make bispectra first.'
-            return
-
-        ntr = lambda num: num*(num-1)*(num-2)/6.   # assuming all triples are present
-#        ntr = lambda bispectra: n.mean([len(n.where(bispectra[0][i] != 0j)[0]) for i in range(len(bispectra[0]))])   # consider possibility of zeros in data and take mean number of good triples over all times. assumes first dm trial is reasonable estimate.
-
-        # using s=S/Q
-        mu = lambda s: 1.  # for bispectra formed from visibilities
-        sigbQ3 = lambda s: n.sqrt((1 + 3*mu(s)**2) + 3*(1 + mu(s)**2)*s**2 + 3*s**4)  # from kulkarni 1989, normalized by Q**3, also rogers et al 1995
-        s = lambda basnr, nants: (2.*basnr/n.sqrt(ntr(nants)))**(1/3.)  # see rogers et al. 1995 for factor of 2
-
-        # measure SNR_bl==Q from sigma clipped times with normal mean and std of bispectra. put into time,dm order
-        bamean = ba.real.mean(axis=2).transpose()
-        bastd = ba.real.std(axis=2).transpose()
-
-        bameanstd = []
-        for dmind in range(len(self.dmarr)):
-            (meanmin,meanmax) = sigma_clip(bamean[:, dmind])  # remove rfi to estimate noise-like parts
-            (stdmin,stdmax) = sigma_clip(bastd[:, dmind])
-            clipped = n.where((bamean[:, dmind] > meanmin) & (bamean[:, dmind] < meanmax) & (bastd[:, dmind] > stdmin) & (bastd[:, dmind] < stdmax) & (bamean[:, dmind] != 0.0))[0]  # remove rfi and zeros
-            bameanstd.append(ba[dmind][clipped].real.mean(axis=1).std())
-
-        bameanstd = n.array(bameanstd)
-        basnr = bamean/bameanstd    # = S**3/(Q**3 / n.sqrt(n_tr)) = s**3 * n.sqrt(n_tr)
-        Q = ((bameanstd/2.)*n.sqrt(ntr(self.nants)))**(1/3.)
-#        Q = n.median( bastd[clipped]**(1/3.) )              # alternate for Q
-#        Q = sigt0toQ(bameanstd, self.nants)              # alternate for Q
-        print 'Noise per baseline (system units), Q per DM trial =', Q
-
-        # detect
-        cands = n.where( (bastd/Q**3 < tol*sigbQ3(s(basnr, self.nants))) & (basnr > sigma) )  # get compact sources with high snr
-
-        # plot snrb lc and expected snr vs. sigb relation
-        if show or save:
-            for dmbin in range(len(self.dmarr)):
-                cands_dm = cands[0][n.where(cands[1] == dmbin)[0]]  # find candidates for this dmbin
-                p.figure(range(len(self.dmarr)).index(dmbin)+1)
-                ax = p.axes()
-                p.subplot(211)
-                p.title(str(self.nskip/self.nbl) + ' nskip, ' + str(dmbin) + ' dmbin, ' + str(len(cands_dm))+' candidates', transform = ax.transAxes)
-                p.plot(basnr[:,dmbin], 'b.')
-                if len(cands_dm) > 0:
-                    p.plot(cands_dm, basnr[cands_dm,dmbin], 'r*')
-                    p.ylim(-2*basnr[cands_dm,dmbin].max(),2*basnr[cands_dm,dmbin].max())
-                p.xlabel('Integration')
-                p.ylabel('SNR_b')
-                p.subplot(212)
-                p.plot(bastd[:,dmbin]/Q[dmbin]**3, basnr[:,dmbin], 'b.')
-
-                # plot reference theory lines
-                smax = s(basnr[:,dmbin].max(), self.nants)
-                sarr = smax*n.arange(0,51)/50.
-                p.plot(sigbQ3(sarr), 1/2.*sarr**3*n.sqrt(ntr(self.nants)), 'k')
-                p.plot(tol*sigbQ3(sarr), 1/2.*sarr**3*n.sqrt(ntr(self.nants)), 'k--')
-                p.plot(bastd[cands_dm,dmbin]/Q[dmbin]**3, basnr[cands_dm,dmbin], 'r*')
-
-                if len(cands_dm) > 0:
-                    p.axis([0, tol*sigbQ3(s(basnr[cands_dm,dmbin].max(), self.nants)), -0.5*basnr[cands_dm,dmbin].max(), 1.1*basnr[cands_dm,dmbin].max()])
-
-                    # show spectral modulation next to each point
-                    for candint in cands_dm:
-                        sm = n.single(round(self.specmod(dmbin,candint),1))
-                        p.text(bastd[candint,dmbin]/Q[dmbin]**3, basnr[candint,dmbin], str(sm), horizontalalignment='right', verticalalignment='bottom')
-                p.xlabel('sigma_b/Q^3')
-                p.ylabel('SNR_b')
-                if save:
-                    if save == 1:
-                        savename = self.file.split('.')[:-1]
-                        savename.append(str(self.scan) + '_' + str(self.nskip/self.nbl) + '_' + str(dmbin) + '_bisp.png')
-                        savename = string.join(savename,'.')
-                    elif type(save) == type('hi'):
-                        savename = save
-                    print 'Saving file as ', savename
-                    p.savefig(self.pathout+savename)
-
-        return basnr[cands], bastd[cands], cands
-
-    def specmod(self, dmbin, tbin, bgwindow=4):
-        """Calculate spectral modulation for given dmtrack.
-        Narrow RFI has large (>5) modulation, while spectrally broad emission has low modulation.
-        See Spitler et al 2012 for details.
-        """
-
-#        smarr = n.zeros(len(self.dataph))  # uncomment to do specmod lightcurve
-#        for int in range(len(self.dataph)-bgwindow):
-        diff = self.tracksub(dmbin, tbin, bgwindow=bgwindow)
-        bfspec = diff.mean(axis=0).real  # should be ok for multipol data...
-        sm = n.sqrt( ((bfspec**2).mean() - bfspec.mean()**2) / bfspec.mean()**2 )
-
-        return sm
-
-    def make_phasedbeam(self):
-        """ Integrates data at dmtrack for each pair of elements in dmarr, time.
-        Not threaded.  Uses dmthread directly.
-        Stores mean of detected signal after dmtrack, effectively forming beam at phase center.
-        Ignores zeros in any bl, freq, time.
-        """
-
-        self.phasedbeam = n.zeros((len(self.dmarr),len(self.reltime)), dtype='float64')
-
-        for i in range(len(self.dmarr)):
-            for j in range(len(self.reltime)):
-                dmtrack = self.dmtrack(dm=self.dmarr[i], t0=self.reltime[j])
-                if ((dmtrack[1][0] == 0) & (dmtrack[1][len(dmtrack[1])-1] == len(self.chans)-1)):   # use only tracks that span whole band
-                    truearr = n.ones( (len(dmtrack[0]), self.nbl, self.npol))
-                    falsearr = n.zeros( (len(dmtrack[0]), self.nbl, self.npol))
-                    selection = self.data[dmtrack[0], :, dmtrack[1], :]
-                    weightarr = n.where(selection != 0j, truearr, falsearr)  # ignore zeros in mean across channels # bit of a hack
-                    try:
-                        self.phasedbeam[i,j] = n.average(selection, weights=weightarr).real
-                    except ZeroDivisionError:
-                        self.phasedbeam[i,j] = n.mean(selection).real    # if all zeros, just make mean # bit of a hack
-            print 'dedispersed for ', self.dmarr[i]
-
-    def detect_phasedbeam(self, sig=5., show=1, save=0, clipplot=1):
-        """ Method to find transients in dedispersed data (in dmt0 space).
-        Clips noise then does sigma threshold.
-        returns array of candidates transients.
-        Optionally plots beamformed lightcurve.
-        save=0 is no saving, save=1 is save with default name, save=<string>.png uses custom name (must include .png). 
-        """
-
-        try:
-            arr = self.phasedbeam
-        except AttributeError:
-            print 'Need to make phasedbeam first.'
-            return
-
-        reltime = self.reltime
-
-        # single iteration of sigma clip to find mean and std, skipping zeros
-        mean = arr.mean()
-        std = arr.std()
-        print 'initial mean, std:  ', mean, std
-        amin,amax = sigma_clip(arr.flatten())
-        clipped = arr[n.where((arr < amax) & (arr > amin) & (arr != 0.))]
-        mean = clipped.mean()
-        std = clipped.std()
-        print 'final mean, sig, std:  ', mean, sig, std
-
-        # Recast arr as significance array
-        arr_snr = (arr-mean)/std   # for real valued trial output, gaussian dis'n, zero mean
-
-        # Detect peaks
-        peaks = n.where(arr_snr > sig)
-        peakmax = n.where(arr_snr == arr_snr.max())
-        print 'peaks:  ', peaks
-
-        # Plot
-        if show:
-            p.clf()
-            ax = p.axes()
-            if clipplot:
-                im = p.imshow(arr, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)), vmin=amin, vmax=amax)
-            else:
-                im = p.imshow(arr, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
-            cb = p.colorbar(im)
-            cb.set_label('Flux Density (Jy)',fontsize=12,fontweight="bold")
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
-            ax.spines['bottom'].set_position(('outward', 20))
-            ax.spines['left'].set_position(('outward', 30))
-            ax.yaxis.set_ticks_position('left')
-            ax.xaxis.set_ticks_position('bottom')
-
-            if len(peaks[0]) > 0:
-                print 'Peak of %f at DM=%f, t0=%f' % (arr.max(), self.dmarr[peakmax[0][0]], reltime[peakmax[1][0]])
-
-                for i in range(len(peaks[1])):
-                    ax = p.imshow(arr, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
-                    p.axis((min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
-                    p.plot([reltime[peaks[1][i]]], [self.dmarr[peaks[0][i]]], 'o', markersize=2*arr_snr[peaks[0][i],peaks[1][i]], markerfacecolor='white', markeredgecolor='blue', alpha=0.5)
-
-            p.xlabel('Time (s)', fontsize=12, fontweight='bold')
-            p.ylabel('DM (pc/cm3)', fontsize=12, fontweight='bold')
-            p.title('Summed Spectra in DM-t0 space')
-            if save:
-                if save == 1:
-                    savename = self.file.split('.')[:-1]
-                    savename.append(str(self.scan) + '_' + str(self.nskip/self.nbl) + '_disp.png')
-                    savename = string.join(savename,'.')
-                elif type(save) == type('hi'):
-                    savename = save
-                print 'Saving file as ', savename
-                p.savefig(self.pathout+savename)
-
-        return peaks,arr[peaks],arr_snr[peaks]
-
-    def writetrack(self, dmbin, tbin, tshift=0, bgwindow=0, show=0, pol=0):
-        """ Writes data from track out as miriad visibility file.
-        Alternative to writetrack that uses stored, approximate preamble used from start of pulse, not middle.
-        Optional background subtraction bl-by-bl over bgwindow integrations. Note that this is bgwindow *dmtracks* so width is bgwindow+track width
-        """
-
-        # create bgsub data
-        datadiffarr = self.tracksub(dmbin, tbin, bgwindow=bgwindow)
-        if n.shape(datadiffarr) == n.shape([0]):    # if track doesn't cross band, ignore this iteration
-            return 0
-
-        data = n.zeros(self.nchan, dtype='complex64')  # default data array. gets overwritten.
-        data0 = n.zeros(self.nchan, dtype='complex64')  # zero data array for flagged bls
-        flags = n.zeros(self.nchan, dtype='bool')
-
-        # define output visibility file names
-        outname = string.join(self.file.split('.')[:-1], '.') + '.' + str(self.nskip/self.nbl) + '-' + 'dm' + str(dmbin) + 't' + str(tbin) + '.mir'
-        print outname
-        vis = miriad.VisData(self.file,)
-
-        int0 = int((tbin + tshift) * self.nbl)
-        flags0 = []
-        i = 0
-        for inp, preamble, data, flags in vis.readLowlevel ('dsl3', False, nocal=True, nopass=True):
-            if i == 0:
-                # prep for temp output vis file
-                shutil.rmtree(outname, ignore_errors=True)
-                out = miriad.VisData(outname)
-                dOut = out.open ('c')
-
-                # set variables
-                dOut.setPreambleType ('uvw', 'time', 'baseline')
-                dOut.writeVarInt ('nants', self.nants0)
-                dOut.writeVarFloat ('inttime', self.inttime0)
-                dOut.writeVarInt ('nspect', self.nspect0)
-                dOut.writeVarDouble ('sdf', self.sdf0)
-                dOut.writeVarInt ('nwide', self.nwide0)
-                dOut.writeVarInt ('nschan', self.nschan0)
-                dOut.writeVarInt ('ischan', self.ischan0)
-                dOut.writeVarDouble ('sfreq', self.sfreq0)
-                dOut.writeVarDouble ('restfreq', self.restfreq0)
-                dOut.writeVarInt ('pol', self.pol0)
-#                inp.copyHeader (dOut, 'history')
-                inp.initVarsAsInput (' ') # ???
-                inp.copyLineVars (dOut)
-            if i < self.nbl:
-                flags0.append(flags.copy())
-                i = i+1
-            else:
-                break
-
-        l = 0
-        for i in range(len(flags0)):  # iterate over baselines
-            # write out track, if not flagged
-            if n.any(flags0[i]):
-                k = 0
-                for j in range(self.nchan):
-                    if j in self.chans:
-                        data[j] = datadiffarr[pol, l, k]
-#                        flags[j] = flags0[i][j]
-                        k = k+1
-                    else:
-                        data[j] = 0 + 0j
-#                        flags[j] = False
-                l = l+1
-            else:
-                data = data0
-#                flags = n.zeros(self.nchan, dtype='bool')
-
-            dOut.write (self.preamble[int0 + i], data, flags0[i])
-
-        dOut.close ()
-        return 1
-
-    def writetrack2(self, dmbin, tbin, tshift=0, bgwindow=0, show=0, pol=0):
-        """ Writes data from track out as miriad visibility file.
-        Alternative to writetrack that uses stored, approximate preamble used from start of pulse, not middle.
-        Optional background subtraction bl-by-bl over bgwindow integrations. Note that this is bgwindow *dmtracks* so width is bgwindow+track width
-        """
-
-        # create bgsub data
-        datadiffarr = self.tracksub(dmbin, tbin, bgwindow=bgwindow)
-        if n.shape(datadiffarr) == n.shape([0]):    # if track doesn't cross band, ignore this iteration
-            return 0
-
-        data = n.zeros(self.nchan, dtype='complex64')  # default data array. gets overwritten.
-        data0 = n.zeros(self.nchan, dtype='complex64')  # zero data array for flagged bls
-        flags = n.zeros(self.nchan, dtype='bool')
-
-        # define output visibility file names
-        outname = string.join(self.file.split('.')[:-1], '.') + '.' + str(self.nskip/self.nbl) + '-' + 'dm' + str(dmbin) + 't' + str(tbin) + '.mir'
-        print outname
-        vis = miriad.VisData(self.file,)
-
-        int0 = int((tbin + tshift) * self.nbl)
-        flags0 = []
-        i = 0
-        for inp, preamble, data, flags in vis.readLowlevel ('dsl3', False, nocal=True, nopass=True):
-            if i == 0:
-                # prep for temp output vis file
-                shutil.rmtree(outname, ignore_errors=True)
-                out = miriad.VisData(outname)
-                dOut = out.open ('c')
-
-                # set variables
-                dOut.setPreambleType ('uvw', 'time', 'baseline')
-                dOut.writeVarInt ('nants', self.nants0)
-                dOut.writeVarFloat ('inttime', self.inttime0)
-                dOut.writeVarInt ('nspect', self.nspect0)
-                dOut.writeVarDouble ('sdf', self.sdf0)
-                dOut.writeVarInt ('nwide', self.nwide0)
-                dOut.writeVarInt ('nschan', self.nschan0)
-                dOut.writeVarInt ('ischan', self.ischan0)
-                dOut.writeVarDouble ('sfreq', self.sfreq0)
-                dOut.writeVarDouble ('restfreq', self.restfreq0)
-                dOut.writeVarInt ('pol', self.pol0)
-#                inp.copyHeader (dOut, 'history')
-                inp.initVarsAsInput (' ') # ???
-                inp.copyLineVars (dOut)
-            if i < self.nbl:
-                flags0.append(flags.copy())
-                i = i+1
-            else:
-                break
-
-        l = 0
-        for i in range(len(flags0)):  # iterate over baselines
-            # write out track, if not flagged
-            if n.any(flags0[i]):
-                k = 0
-                for j in range(self.nchan):
-                    if j in self.chans:
-                        data[j] = datadiffarr[pol, l, k]
-#                        flags[j] = flags0[i][j]
-                        k = k+1
-                    else:
-                        data[j] = 0 + 0j
-#                        flags[j] = False
-                l = l+1
-            else:
-                data = data0
-#                flags = n.zeros(self.nchan, dtype='bool')
-
-            dOut.write (self.preamble[int0 + i], data, flags0[i])
-
-        dOut.close ()
-        return 1
 
 
 def sigma_clip(arr,sigma=3):
