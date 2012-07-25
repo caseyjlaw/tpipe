@@ -52,61 +52,59 @@ class reader:
     Set your own set of parameters by adding to the params dictionary.
     """
 
-    # parameters used by various subclasses
-    # each set is indexed by a name, like a profile
-    # Note that each parameter must also be listed in set_params method in order to get set
-    params = {
-        'default' : {
-            'ants' : range(0,29),          # antenna set to look for (only works for ms data)
-            'chans': n.array(range(5,59)),   # channels to read
-            'dmarr' : [44.,88.],      # dm values to use for dedispersion (only for some subclasses)
-            'pulsewidth' : 0.0,      # width of pulse in time (seconds)
-            'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
-            'pathout': './',         # place to put output files
-            'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
-            },
-        'vlacrab' : {
-            'ants' : range(0,8),          # antenna set to look for (only works for ms data)
-            'chans': n.array(range(5,59)),   # channels to read
-            'dmarr' : [29.,58.],      # dm values to use for dedispersion (only for some subclasses)
-            'pulsewidth' : 0.0,      # width of pulse in time (seconds)
-            'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
-            'pathout': './',         # place to put output files
-            'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
-            },
-        'psa32' : {
-            'ants' : range(0,32),          # antenna set to look for (only works for ms data)
-            'chans': n.array(range(200)),   # channels to read
-            'dmarr' : [0.],      # dm values to use for dedispersion (only for some subclasses)
-            'pulsewidth' : 0.0,      # width of pulse in time (seconds)
-            'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
-            'pathout': './',         # place to put output files
-            'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
-            }
-        }
-
-    def set_params(self, version='default', key='', value=''):
+    def set_params(self, profile='default', kargs={}):
         """ Method called by __init__ in subclasses. This sets all parameters needed elsewhere.
-        Can optionally set up range of defaults called with name
+        Can optionally set up range of defaults called with name.
         """
 
-        # either set parameter in master self.params dictionary or set parameters to dictionary values
-        if key != '':
-            self.params[version][key] = value
+        # parameters used by various subclasses
+        # each set is indexed by a name, called a profile
+        # Note that each parameter must also be listed in set_params method in order to get set
+        self.profile = profile
+        self.params = {
+            'default' : {
+                'chans': n.array(range(5,59)),   # channels to read
+                'dmarr' : [44.,88.],      # dm values to use for dedispersion (only for some subclasses)
+                'pulsewidth' : 0.0,      # width of pulse in time (seconds)
+                'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
+                'pathout': './',         # place to put output files
+                'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
+                },
+            'vlacrab' : {
+                'chans': n.array(range(5,59)),   # channels to read
+                'dmarr' : [29.,58.],      # dm values to use for dedispersion (only for some subclasses)
+                'pulsewidth' : 0.0,      # width of pulse in time (seconds)
+                'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
+                'pathout': './',         # place to put output files
+                'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
+                },
+            'psa' : {
+                'chans': n.array(range(140,150)),   # channels to read
+                'dmarr' : [0.],      # dm values to use for dedispersion (only for some subclasses)
+                'pulsewidth' : 0.0,      # width of pulse in time (seconds)
+                'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
+                'pathout': './',         # place to put output files
+                'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
+                }
+            }
 
-        self.pathout = self.params[version]['pathout']
-        self.chans = self.params[version]['chans']
-        self.dmarr = self.params[version]['dmarr']
-        self.pulsewidth = self.params[version]['pulsewidth']
-        self.approxuvw = self.params[version]['approxuvw']
-        self.ants = self.params[version]['ants']
-        self.beam_params = self.params[version]['beam_params']
+        # may further modify parameters manually
+        if len(kargs) > 0:
+            for key in kargs:
+                self.params[profile][key] = kargs[key]
 
-    def show_params(self, version='default'):
-        """ Print parameters of pipeline.
+        self.pathout = self.params[profile]['pathout']
+        self.chans = self.params[profile]['chans']
+        self.dmarr = self.params[profile]['dmarr']
+        self.pulsewidth = self.params[profile]['pulsewidth']
+        self.approxuvw = self.params[profile]['approxuvw']
+        self.beam_params = self.params[profile]['beam_params']
+
+    def show_params(self):
+        """ Print parameters of pipeline that can be modified upon creation.
         """
         
-        return self.params[version]
+        return self.params[self.profile]
 
     def spec(self, ind=[], save=0):
         """ Plot spectrogram for phase center by taking mean over baselines and polarizations.
@@ -225,7 +223,7 @@ class reader:
             print 'Cleaning image...'
             beam = ai.bm_image()
             beamgain = aipy.img.beam_gain(beam[0])
-            (clean, dd) = aipy.deconv.clean(image, beam[0], verbose=True, gain=gain, tol=tol)  # light cleaning
+            (clean, dd) = aipy.deconv.clean(image, beam[0], verbose=True, gain=gain, tol=tol)
 
             try:
                 import gaussfitter
@@ -250,7 +248,7 @@ class reader:
 
         peak = n.where(n.max(image_final) == image_final)
         print 'Image peak of %e at (%d,%d)' % (n.max(image_final), peak[0][0], peak[1][0])
-        print 'Peak/RMS = %e' % (image_final.max()/image_final.std())
+        print 'Peak/RMS = %e' % (image_final.max()/image_final[n.where(image_final <= 0.9*image_final.max())].std())   # estimate std without image peak
 
         if save:
             if save == 1:
@@ -385,6 +383,9 @@ class mirreader(reader):
         # define data arrays
         da = n.zeros((nints,self.nbl,self.nchan),dtype='complex64')
         fl = n.zeros((nints,self.nbl,self.nchan),dtype='bool')
+        u = n.zeros((nints,self.nbl),dtype='float64')
+        v = n.zeros((nints,self.nbl),dtype='float64')
+        w = n.zeros((nints,self.nbl),dtype='float64')
         pr = n.zeros((nints*self.nbl,5),dtype='float64')
 
         print
@@ -402,6 +403,10 @@ class mirreader(reader):
                 da[(i-nskip)//self.nbl,bldict[preamble[4]]] = data
                 fl[(i-nskip)//self.nbl,bldict[preamble[4]]] = flags
                 pr[i-nskip] = preamble
+                # uvw stored in preamble index 0,1,2 in units of ns
+                u[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[0] * self.freq.mean()
+                v[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[1] * self.freq.mean()
+                w[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[2] * self.freq.mean()
             else:
                 break     # stop at nints
 
@@ -411,16 +416,13 @@ class mirreader(reader):
             i = i+1
 
         # build final data structures
-#        good = n.where ( (self.blarr[:,0] != 5) & (self.blarr[:,1] != 5) & (self.blarr[:,0] != 10) & (self.blarr[:,1] != 10) )[0] # remove bad ants?
         self.rawdata = n.expand_dims(da, 3)  # hack to get superfluous pol axis
         self.flags = n.expand_dims(fl, 3)
         self.data = (self.flags*self.rawdata)[:,:,self.chans,:] # [:,good,:,:]  # remove bad ants?
-#        self.blarr = self.blarr[good]  # remove bad ants?
         self.preamble = pr
-        self.u = (pr[:,0] * self.freq.mean()).reshape(nints, self.nbl)
-        self.v = (pr[:,1] * self.freq.mean()).reshape(nints, self.nbl)
-        self.w = (pr[:,2] * self.freq.mean()).reshape(nints, self.nbl)
-        # could add uvw, too... preamble index 0,1,2 in units of ns
+        self.u = u
+        self.v = v
+        self.w = w
         self.dataph = (self.data.mean(axis=3).mean(axis=1)).real  #dataph is summed and detected to form TP beam at phase center, multi-pol
         time = self.preamble[::self.nbl,3]
         self.reltime = 24*3600*(time - time[0])      # relative time array in seconds. evla times change...?
@@ -492,7 +494,6 @@ class msreader(reader):
 
             # set integration time
             ti0 = da['axis_info']['time_axis']['MJDseconds']
-#            self.inttime = n.mean([ti0[i+1] - ti0[i] for i in range(len(ti0)-1)])
             self.inttime = scansummary['summary'][scanlist[scan]]['0']['IntegrationTime']
             self.inttime0 = self.inttime
             print 'Initializing integration time (s):', self.inttime
@@ -500,6 +501,7 @@ class msreader(reader):
             pickle.dump((self.npol_orig, self.nbl, self.blarr, self.inttime, self.inttime0, spwinfo, scansummary), pkl)
         pkl.close()
 
+        self.ants = n.unique(self.blarr)
         self.nants = len(n.unique(self.blarr))
         self.nants0 = len(n.unique(self.blarr))
         print 'Initializing nants:', self.nants
@@ -534,7 +536,7 @@ class msreader(reader):
         # read data into data structure
         ms.open(self.file)
         ms.selectinit(datadescid=spwlist[0])  # reset select params for later data selection
-        selection = {'time': [starttime, stoptime], 'antenna1': self.ants, 'antenna2': self.ants}
+        selection = {'time': [starttime, stoptime]}
         ms.select(items = selection)
         print 'Reading %s column, SB %d, polarization %s...' % (datacol, spwlist[0], selectpol)
         ms.selectpolarization(selectpol)
@@ -569,8 +571,7 @@ class msreader(reader):
         self.restfreq0 = 0.0
         self.pol0 = -1 # assumes single pol?
 
-#        self.rawdata = newda[len(newda)/2:]  # hack to remove autos
-        self.u = u.transpose() * (-self.freq.mean()*1e9/3e8)  # uvw are in m on ground. scale by -wavelenth to get projected lamba uvw (as in miriad?)
+        self.u = u.transpose() * (-self.freq.mean()*1e9/3e8)
         self.v = v.transpose() * (-self.freq.mean()*1e9/3e8)
         self.w = w.transpose() * (-self.freq.mean()*1e9/3e8)
         self.rawdata = newda
@@ -598,11 +599,14 @@ class pipe_msint(msreader):
     datacol is the name of the data column name to read from the MS.
     """
 
-    def __init__(self, file, version='default', nints=1000, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data'):
-        self.set_params(version=version)
-
+    def __init__(self, file, profile='default', nints=1000, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
+        self.set_params(profile=profile, kargs=kargs)
         self.read(file=file, nints=nints, nskip=nskip, spw=spw, selectpol=selectpol, scan=scan, datacol=datacol)
+        self.prep()
 
+    def prep(self):
+        """ Sets up tracks used to speed up dedispersion code.
+        """
         self.track0 = self.track(0.)
         self.twidth = 0
         for k in self.track0[1]:
@@ -628,7 +632,7 @@ class pipe_msint(msreader):
         ontime = n.where(((pulset + pulsedt) >= reltime - tint/2.) & (pulset <= reltime + tint/2.))
         for ch in range(len(chans)):
             timebin = n.concatenate((timebin, ontime[0]))
-            chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype=int))))
+            chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype='int'))))
 
         track = (list(timebin), list(chanbin))
 
@@ -832,17 +836,14 @@ class pipe_msdisp(msreader):
     datacol is the name of the data column name to read from the MS.
     """
 
-    def __init__(self, file, version='default', nints=1000, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data'):
-        self.set_params(version=version)
-
+    def __init__(self, file, profile='default', nints=1000, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
+        self.set_params(profile=profile, kargs=kargs)
         self.read(file=file, nints=nints, nskip=nskip, spw=spw, selectpol=selectpol, scan=scan, datacol=datacol)
-
         self.prep()
 
     def prep(self):
         """ Sets up tracks used to speed up dedispersion code.
         """
-
         # set up ur tracks (lol)
         self.dmtrack0 = {}
         self.twidths = {}
@@ -873,7 +874,7 @@ class pipe_msdisp(msreader):
         for ch in range(len(chans)):
             ontime = n.where(((pulset[ch] + pulsedt[ch]) >= reltime - tint/2.) & (pulset[ch] <= reltime + tint/2.))
             timebin = n.concatenate((timebin, ontime[0]))
-            chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype=int))))
+            chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype='int'))))
 
         track = (list(timebin), list(chanbin))
 
@@ -1188,11 +1189,14 @@ class pipe_mirint(mirreader):
     nocal,nopass are options for applying calibration while reading Miriad data.
     """
 
-    def __init__(self, file, version='default', nints=1000, nskip=0, nocal=False, nopass=False):
-        self.set_params(version=version)
-
+    def __init__(self, file, profile='default', nints=1000, nskip=0, nocal=False, nopass=False, **kargs):
+        self.set_params(profile=profile, kargs=kargs)
         self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
+        self.prep()
 
+    def prep(self):
+        """ Sets up tracks used to speed up dedispersion code.
+        """
         self.track0 = self.track(0.)
         self.twidth = 0
         for k in self.track0[1]:
@@ -1218,7 +1222,7 @@ class pipe_mirint(mirreader):
         ontime = n.where(((pulset + pulsedt) >= reltime - tint/2.) & (pulset <= reltime + tint/2.))
         for ch in range(len(chans)):
             timebin = n.concatenate((timebin, ontime[0]))
-            chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype=int))))
+            chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype='int'))))
 
         track = (list(timebin), list(chanbin))
 
@@ -1417,15 +1421,14 @@ class pipe_mirdisp(mirreader):
     nocal,nopass are options for applying calibration while reading Miriad data.
     """
 
-    def __init__(self, file, version='default', nints=1000, nskip=0, nocal=False, nopass=False):
-        self.set_params(version=version)
-
+    def __init__(self, file, profile='default', nints=1000, nskip=0, nocal=False, nopass=False, **kargs):
+        self.set_params(profile=profile, kargs=kargs)
         self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
-
         self.prep()
 
     def prep(self):
-
+        """ Sets up tracks used to speed up dedispersion code.
+        """
         # set up ur tracks (lol)
         self.dmtrack0 = {}
         self.twidths = {}
@@ -1457,7 +1460,7 @@ class pipe_mirdisp(mirreader):
         for ch in range(len(chans)):
             ontime = n.where(((pulset[ch] + pulsedt[ch]) >= reltime - tint/2.) & (pulset[ch] <= reltime + tint/2.))
             timebin = n.concatenate((timebin, ontime[0]))
-            chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype=int))))
+            chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype='int'))))
 
         track = (list(timebin), list(chanbin))
 
