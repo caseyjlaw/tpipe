@@ -227,7 +227,8 @@ class Reader:
 
         # make image
         ai = aipy.img.Img(size=size, res=res)
-        ai.put( (self.u[i],self.v[i],self.w[i]), tr)
+        uvw_new, tr_new = ai.append_hermitian( (self.u[i],self.v[i],self.w[i]), tr)
+        ai.put(uvw_new, tr_new)
         image = ai.image(center = (size/res/2, size/res/2))
         image_final = image
 
@@ -256,7 +257,8 @@ class Reader:
 
         ax = p.axes()
         ax.set_position([0.2,0.2,0.7,0.7])
-        im = p.imshow(image_final, aspect='auto', origin='upper', interpolation='nearest', extent=[-fov/2, fov/2, -fov/2, fov/2])
+#        im = p.imshow(image_final, aspect='auto', origin='upper', interpolation='nearest', extent=[-fov/2, fov/2, -fov/2, fov/2])
+        im = p.imshow(image_final, aspect='auto', origin='lower', interpolation='nearest', extent=[fov/2, -fov/2, -fov/2, fov/2])
         cb = p.colorbar(im)
         cb.set_label('Flux Density (Jy)',fontsize=12,fontweight="bold")
         ax.spines['top'].set_visible(False)
@@ -265,8 +267,8 @@ class Reader:
         ax.spines['left'].set_position(('outward', 30))
         ax.yaxis.set_ticks_position('left')
         ax.xaxis.set_ticks_position('bottom')
-        p.xlabel('Offset (arcsec)',fontsize=12,fontweight="bold")
-        p.ylabel('Offset (arcsec)',fontsize=12,fontweight="bold")
+        p.xlabel('RA/l Offset (arcsec)',fontsize=12,fontweight="bold")
+        p.ylabel('Dec/m Offset (arcsec)',fontsize=12,fontweight="bold")
 
         peak = n.where(n.max(image_final) == image_final)
         print 'Image peak of %e at (%d,%d)' % (n.max(image_final), peak[0][0], peak[1][0])
@@ -284,19 +286,30 @@ class Reader:
 
         return image_final
 
-    def phaseshift(self, l, m):
-        """ Function to apply phase shift to (l,m) coordinates of data array.
+    def phaseshift(self, dl=0, dm=0, im=[[0]], size=0):
+        """ Function to apply phase shift (l,m) coordinates of data array, by (dl, dm).
+        If instead a 2d-array image, im, is given, phase center is shifted to image peak. Needs size to know image scale.
         Sets data and dataph arrays to new values.
         """
 
         newdata = n.zeros(shape=self.data.shape, dtype='complex')
-        ang = lambda l,m,u,v,freq: l*n.outer(u,freq/freq.mean()) + m*n.outer(v,freq/freq.mean())  # operates on single time of u,v
+        ang = lambda dl,dm,u,v,freq: (dl*n.outer(u,freq/freq.mean()) + dm*n.outer(v,freq/freq.mean()))  # operates on single time of u,v
 
-        print 'Shifting phase center by (l,m) = (%e,%e) = (%e,%e) arcsec' % (l, m, n.degrees(l)*3600, n.degrees(m)*3600)
+        if ((len(im) != 1) & (size != 0)):
+            print 'Shifting phase to image peak.'
+            y,x = n.where(im == im.max())
+            length = len(im)
+            dl = (length/2 - x[0]) * 1./size
+            dm = (y[0] - length/2) * 1./size
+        elif ((dl != 0) | (dm != 0)):
+            print 'Shifting phase according to given (dl,dm).'
+        else:
+            raise ValueError('Need to give either dl or dm, or im and size.')
 
+        print 'Shifting phase center by (dl,dm) = (%e,%e) = (%e,%e) arcsec' % (dl, dm, n.degrees(dl)*3600, n.degrees(dm)*3600)
         for int in range(len(newdata)):
             for pol in range(self.npol):
-                newdata[int,:,:,pol] = self.data[int,:,:,pol] * n.exp(-2j*n.pi*ang(l, m, self.u[int], self.v[int], self.freq))
+                newdata[int,:,:,pol] = self.data[int,:,:,pol] * n.exp(-2j*n.pi*ang(dl, dm, self.u[int], self.v[int], self.freq))
     
         self.data = newdata
         self.dataph = (self.data.mean(axis=3).mean(axis=1)).real  # multi-pol
@@ -436,14 +449,17 @@ class MiriadReader(Reader):
 
             i = i+1
 
+        # Assumes miriad files store uvw in ns. Corrects by mean frequency of channels in use.
+        self.u = u
+        self.v = v
+        self.w = w
+
         # build final data structures
         self.rawdata = n.expand_dims(da, 3)  # hack to get superfluous pol axis
         self.flags = n.expand_dims(fl, 3)
         self.data = (self.flags*self.rawdata)[:,:,self.chans,:] # [:,good,:,:]  # remove bad ants?
         self.preamble = pr
-        self.u = u * (self.freq.mean()/self.sfreq)
-        self.v = v * (self.freq.mean()/self.sfreq)
-        self.w = w * (self.freq.mean()/self.sfreq)
+
         self.dataph = (self.data.mean(axis=3).mean(axis=1)).real  #dataph is summed and detected to form TP beam at phase center, multi-pol
         time = self.preamble[::self.nbl,3]
         self.reltime = 24*3600*(time - time[0])      # relative time array in seconds. evla times change...?
@@ -744,9 +760,11 @@ class MSReader(Reader):
         self.restfreq0 = 0.0
         self.pol0 = -1 # assumes single pol?
 
-        self.u = u.transpose() * (-self.freq.mean()*1e9/3e8)
-        self.v = v.transpose() * (-self.freq.mean()*1e9/3e8)
-        self.w = w.transpose() * (-self.freq.mean()*1e9/3e8)
+        # Assumes MS files store uvw in meters. Corrects by mean frequency of channels in use.
+        self.u = u.transpose() * self.freq.mean() * (1e9/3e8)
+        self.v = v.transpose() * self.freq.mean() * (1e9/3e8)
+        self.w = w.transpose() * self.freq.mean() * (1e9/3e8)
+
         self.rawdata = newda
         self.data = self.rawdata[:,:,self.chans]
         self.dataph = (self.data.mean(axis=3).mean(axis=1)).real  # multi-pol
@@ -823,7 +841,7 @@ class ProcessByIntegration():
         # set up bg track
         if bgwindow:
             # measure max width of pulse (to avoid in bgsub)
-            bgrange = range(-bgwindow/2 - twidth + tbin, - twidth + tbin) + range(twidth + tbin, twidth + bgwindow/2 + tbin)
+            bgrange = range(tbin -(bgwindow+twidth)/2, tbin-twidth/2) + range(tbin + twidth/2 + 1, tbin + (twidth+bgwindow)/2 + 1)
             for k in bgrange:     # build up super track for background subtraction
                 if bgrange.index(k) == 0:   # first time through
                     trackoff = (list(n.array(track_t)+k), track_c)
@@ -834,7 +852,7 @@ class ProcessByIntegration():
             truearroff = n.ones( n.shape(dataoff) )
             falsearroff = 1e-5*n.ones( n.shape(dataoff) )  # small weight to keep n.average from giving NaN
 
-        datadiffarr = n.zeros((self.nchan, self.nbl, self.npol),dtype='complex')
+        datadiffarr = n.zeros((len(self.chans), self.nbl, self.npol),dtype='complex')
 
         # compress time axis, then subtract on and off tracks
         for ch in n.unique(trackon[1]):
@@ -890,10 +908,10 @@ for i in range(0, len(n_a)-2):
         triples = self.make_triples()
 
         self.bispectra = n.zeros((len(self.data), len(triples)), dtype='complex')
-        truearr = n.ones( (self.npol, self.nbl, self.nchan))
-        falsearr = n.zeros( (self.npol, self.nbl, self.nchan))
+        truearr = n.ones( (self.npol, self.nbl, len(self.chans)))
+        falsearr = n.zeros( (self.npol, self.nbl, len(self.chans)))
 
-        for i in range(bgwindow/2, len(self.data)-(bgwindow/2+1)):
+        for i in range((bgwindow/2)+self.twidth, len(self.data)-( (bgwindow/2)+self.twidth )):
             diff = self.tracksub(i, bgwindow=bgwindow)
 
             if len(n.shape(diff)) == 1:    # no track
@@ -925,7 +943,7 @@ for i in range(0, len(n_a)-2):
             print 'Need to make bispectra first.'
             return
 
-        ntr = lambda num: num*(num-1)*(num-2)/6.  # theoretical number of triples
+        ntr = lambda num: num*(num-1)*(num-2)/6  # theoretical number of triples
 #        ntr = lambda num: n.mean([len(n.where(ba[i] != 0j)[0]) for i in range(len(ba))])   # consider possibility of zeros in data and take mean number of good triples over all times
 
         # using s=S/Q
@@ -1091,7 +1109,7 @@ class ProcessByDispersion():
         # set up bg track
         if bgwindow:
             # measure max width of pulse (to avoid in bgsub)
-            bgrange = range(-bgwindow/2 - twidth + tbin, - twidth + tbin) + range(twidth + tbin, twidth + bgwindow/2 + tbin)
+            bgrange = range(tbin -(bgwindow+twidth)/2, tbin-twidth/2) + range(tbin + twidth/2 + 1, tbin + (twidth+bgwindow)/2 + 1)
             for k in bgrange:     # build up super track for background subtraction
                 if bgrange.index(k) == 0:   # first time through
                     trackoff = (list(n.array(track0)+k), track1)
@@ -1102,7 +1120,7 @@ class ProcessByDispersion():
             truearroff = n.ones( n.shape(dataoff) )
             falsearroff = 1e-5*n.ones( n.shape(dataoff) )  # small weight to keep n.average from giving NaN
 
-        datadiffarr = n.zeros((self.nchan, self.nbl, self.npol),dtype='complex')
+        datadiffarr = n.zeros((len(self.chans), self.nbl, self.npol),dtype='complex')
         
         # compress time axis, then subtract on and off tracks
         for ch in n.unique(trackon[1]):
@@ -1159,15 +1177,15 @@ for i in range(0, len(n_a)-2):
 
         # set up arrays for bispectrum and for weighting data (ignoring zeros)
         self.bispectra = n.zeros((len(self.dmarr), len(self.data), len(triples)), dtype='complex')
-        truearr = n.ones( (self.npol, self.nbl, self.nchan))
-        falsearr = n.zeros( (self.npol, self.nbl, self.nchan))
+        truearr = n.ones( (self.npol, self.nbl, len(self.chans)))
+        falsearr = n.zeros( (self.npol, self.nbl, len(self.chans)))
 
         # iterate over dm trials and integrations
         for d in range(len(self.dmarr)):
             twidth = n.round(self.twidths[d])
             dmwidth = int(n.round(n.max(self.dmtrack0[d][0]) - n.min(self.dmtrack0[d][0])))
 
-            for i in range((bgwindow+twidth)/2, len(self.data)-( (bgwindow+twidth)/2+dmwidth+1 )):   # dmwidth avoided at end, others are split on front and back side of time iteration
+            for i in range((bgwindow/2)+twidth, len(self.data)-( (bgwindow/2)+twidth+dmwidth )):   # dmwidth avoided at end, others are split on front and back side of time iteration
                 diff = self.tracksub(d, i, bgwindow=bgwindow)
 
                 if len(n.shape(diff)) == 1:    # no track
@@ -1199,7 +1217,7 @@ for i in range(0, len(n_a)-2):
             print 'Need to make bispectra first.'
             return
 
-        ntr = lambda num: num*(num-1)*(num-2)/6.   # assuming all triples are present
+        ntr = lambda num: num*(num-1)*(num-2)/6   # assuming all triples are present
 #        ntr = lambda bispectra: n.mean([len(n.where(bispectra[0][i] != 0j)[0]) for i in range(len(bispectra[0]))])   # consider possibility of zeros in data and take mean number of good triples over all times. assumes first dm trial is reasonable estimate.
 
         # using s=S/Q
