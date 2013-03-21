@@ -9,7 +9,7 @@ Can read MS or Miriad formatted data. Will try to import the following:
 - aipy for imaging numpy array data
 """
 
-import sys, string, os, shutil
+import sys, string, os, shutil, types
 from os.path import join
 import pickle
 import numpy as n
@@ -56,7 +56,7 @@ class Reader:
     def __init__(self):
         raise NotImplementedError('Cannot instantiate class directly. Use \'pipe\' subclasses.')
 
-    def set_params(self, profile='default', kargs={}):
+    def set_params(self, profile='default', **kargs):
         """ Method called by __init__ in subclasses. This sets all parameters needed elsewhere.
         Can optionally use a profile which is a set of params.
         Also can set key directly as keyword=value pair.
@@ -90,6 +90,14 @@ class Reader:
                 'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
                 'pathout': './',         # place to put output files
                 'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
+                },
+            'pocob0329' : {
+                'chans': n.array(range(5,59)),   # channels to read
+                'dmarr' : [0, 13.4, 26.8, 40.2, 53.5],      # dm values to use for dedispersion (only for some subclasses)
+                'pulsewidth' : 0.005,      # width of pulse in time (seconds)
+                'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
+                'pathout': './',         # place to put output files
+                'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
                 }
             }
 
@@ -104,7 +112,7 @@ class Reader:
         self.pathout = self.params[profile]['pathout']
         self.chans = self.params[profile]['chans']
         self.dmarr = self.params[profile]['dmarr']
-        self.pulsewidth = self.params[profile]['pulsewidth']
+        self.pulsewidth = self.params[profile]['pulsewidth'] * n.ones(len(self.chans))
         self.approxuvw = self.params[profile]['approxuvw']
         self.beam_params = self.params[profile]['beam_params']
 
@@ -121,12 +129,16 @@ class Reader:
         """
 
         reltime = self.reltime
-        bf = self.dataph
+        bf = n.ma.masked_array(self.dataph, self.dataph == 0)
 
         print 'Data mean, std: %f, %f' % (self.dataph.mean(), self.dataph.std())
-        (vmin, vmax) = sigma_clip(bf.ravel())
+        (vmin, vmax) = sigma_clip(bf.data.ravel())
+        if ( (not(vmin >= 0)) & (not(vmin <= 0)) ):
+            print 'sigma_clip returning NaNs. Using data (min,max).'
+            vmin = bf.ravel().min()
+            vmax = bf.ravel().max()
 
-        p.figure(1)
+        p.figure()
         p.clf()
         ax = p.axes()
         ax.set_position([0.2,0.2,0.7,0.7])
@@ -167,7 +179,7 @@ class Reader:
         data_type is needed to understand how to grab baseline info. options are 'ms' and 'mir'.
         """
 
-        nints = float(len(self.reltime))
+        nints = self.nints
         bllen = []
 
         if data_type == 'mir':
@@ -175,14 +187,14 @@ class Reader:
             for bl in n.unique(bls):
                 bllen.append(n.shape(n.where(bls == bl))[1])
         elif data_type == 'ms':
-            for i in range(len(self.blarr)):
+            for i in xrange(len(self.blarr)):
                 bllen.append(len(n.where(self.data[:,i,chan,pol] != 0.00)[0]))
 
         bllen = n.array(bllen)
 
         if show:
             p.clf()
-            for i in range(self.nbl):
+            for i in xrange(self.nbl):
                 p.text(self.blarr[i,0], self.blarr[i,1], s=str(100*(bllen[i]/nints - 1)), horizontalalignment='center', verticalalignment='center', fontsize=9)
             p.axis((0,self.nants+1,0,self.nants+1))
             p.plot([0,self.nants+1],[0,self.nants+1],'b--')
@@ -195,7 +207,7 @@ class Reader:
 
         return self.blarr,bllen
 
-    def imagetrack(self, track, i=0, pol='i', size=48000, res=500, clean=True, gain=0.01, tol=1e-4, newbeam=0, save=0):
+    def imagetrack(self, track, i=0, pol='i', size=48000, res=500, clean=True, gain=0.01, tol=1e-4, newbeam=0, save=0, show=0):
         """ Use apiy to image a track returned by tracksub of dimensions (npol, nbl, nchan).
         int is used to select uvw coordinates for track. default is first int.
         pol can be 'i' for a Stokes I image (mean over pol dimension) or a pol index.
@@ -255,34 +267,35 @@ class Reader:
             image_restored = (restored + dd['res']).real/beamgain
             image_final = image_restored
 
-        ax = p.axes()
-        ax.set_position([0.2,0.2,0.7,0.7])
-#        im = p.imshow(image_final, aspect='auto', origin='upper', interpolation='nearest', extent=[-fov/2, fov/2, -fov/2, fov/2])
-        im = p.imshow(image_final, aspect='auto', origin='lower', interpolation='nearest', extent=[fov/2, -fov/2, -fov/2, fov/2])
-        cb = p.colorbar(im)
-        cb.set_label('Flux Density (Jy)',fontsize=12,fontweight="bold")
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['bottom'].set_position(('outward', 20))
-        ax.spines['left'].set_position(('outward', 30))
-        ax.yaxis.set_ticks_position('left')
-        ax.xaxis.set_ticks_position('bottom')
-        p.xlabel('RA/l Offset (arcsec)',fontsize=12,fontweight="bold")
-        p.ylabel('Dec/m Offset (arcsec)',fontsize=12,fontweight="bold")
+        if show or save:
+            ax = p.axes()
+            ax.set_position([0.2,0.2,0.7,0.7])
+#            im = p.imshow(image_final, aspect='auto', origin='upper', interpolation='nearest', extent=[-fov/2, fov/2, -fov/2, fov/2])
+            im = p.imshow(image_final, aspect='auto', origin='lower', interpolation='nearest', extent=[fov/2, -fov/2, -fov/2, fov/2])
+            cb = p.colorbar(im)
+            cb.set_label('Flux Density (Jy)',fontsize=12,fontweight="bold")
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['bottom'].set_position(('outward', 20))
+            ax.spines['left'].set_position(('outward', 30))
+            ax.yaxis.set_ticks_position('left')
+            ax.xaxis.set_ticks_position('bottom')
+            p.xlabel('RA/l Offset (arcsec)',fontsize=12,fontweight="bold")
+            p.ylabel('Dec/m Offset (arcsec)',fontsize=12,fontweight="bold")
 
-        peak = n.where(n.max(image_final) == image_final)
-        print 'Image peak of %e at (%d,%d)' % (n.max(image_final), peak[0][0], peak[1][0])
-        print 'Peak/RMS = %e' % (image_final.max()/image_final[n.where(image_final <= 0.9*image_final.max())].std())   # estimate std without image peak
+            peak = n.where(n.max(image_final) == image_final)
+            print 'Image peak of %e at (%d,%d)' % (n.max(image_final), peak[0][0], peak[1][0])
+            print 'Peak/RMS = %e' % (image_final.max()/image_final[n.where(image_final <= 0.9*image_final.max())].std())   # estimate std without image peak
 
-        if save:
-            if save == 1:
-                savename = self.file.split('.')[:-1]
-                savename.append(str(self.nskip/self.nbl) + '_im.png')
-                savename = string.join(savename,'.')
-            elif type(save) == type('hi'):
-                savename = save
-            print 'Saving file as ', savename
-            p.savefig(self.pathout+savename)
+            if save:
+                if save == 1:
+                    savename = self.file.split('.')[:-1]
+                    savename.append(str(self.nskip/self.nbl) + '_im.png')
+                    savename = string.join(savename,'.')
+                elif type(save) == type('hi'):
+                    savename = save
+                print 'Saving file as ', savename
+                p.savefig(self.pathout+savename)
 
         return image_final
 
@@ -296,22 +309,21 @@ class Reader:
         ang = lambda dl,dm,u,v,freq: (dl*n.outer(u,freq/freq.mean()) + dm*n.outer(v,freq/freq.mean()))  # operates on single time of u,v
 
         if ((len(im) != 1) & (size != 0)):
-            print 'Shifting phase to image peak.'
             y,x = n.where(im == im.max())
             length = len(im)
             dl = (length/2 - x[0]) * 1./size
             dm = (y[0] - length/2) * 1./size
+            print 'Shifting phase center to image peak: (dl,dm) = (%e,%e) = (%e,%e) arcsec' % (dl, dm, n.degrees(dl)*3600, n.degrees(dm)*3600)
         elif ((dl != 0) | (dm != 0)):
-            print 'Shifting phase according to given (dl,dm).'
+            print 'Shifting phase center by given (dl,dm) = (%e,%e) = (%e,%e) arcsec' % (dl, dm, n.degrees(dl)*3600, n.degrees(dm)*3600)
         else:
             raise ValueError('Need to give either dl or dm, or im and size.')
 
-        print 'Shifting phase center by (dl,dm) = (%e,%e) = (%e,%e) arcsec' % (dl, dm, n.degrees(dl)*3600, n.degrees(dm)*3600)
-        for int in range(len(newdata)):
-            for pol in range(self.npol):
-                newdata[int,:,:,pol] = self.data[int,:,:,pol] * n.exp(-2j*n.pi*ang(dl, dm, self.u[int], self.v[int], self.freq))
+        for i in xrange(len(newdata)):
+            for pol in xrange(self.npol):
+                newdata[i,:,:,pol] = self.data[i,:,:,pol] * n.exp(-2j*n.pi*ang(dl, dm, self.u[i], self.v[i], self.freq))
     
-        self.data = newdata
+        self.data = n.ma.masked_array(newdata, newdata == 0j)
         self.dataph = (self.data.mean(axis=3).mean(axis=1)).real  # multi-pol
         self.min = self.dataph.min()
         self.max = self.dataph.max()
@@ -361,6 +373,7 @@ class MiriadReader(Reader):
         """
 
         self.file = file
+        self.nints = nints
         vis = miriad.VisData(self.file,)
 
         # read data into python arrays
@@ -403,7 +416,6 @@ class MiriadReader(Reader):
 
         # Initialize more stuff...
         self.freq = self.sfreq + self.sdf * self.chans
-        self.pulsewidth = self.pulsewidth * n.ones(len(self.chans)) # pulse width of crab and m31 candidates
 
         # good baselines
         self.nbl = len(self.blarr)
@@ -457,23 +469,16 @@ class MiriadReader(Reader):
         # build final data structures
         self.rawdata = n.expand_dims(da, 3)  # hack to get superfluous pol axis
         self.flags = n.expand_dims(fl, 3)
-        self.data = (self.flags*self.rawdata)[:,:,self.chans,:] # [:,good,:,:]  # remove bad ants?
         self.preamble = pr
 
-        self.dataph = (self.data.mean(axis=3).mean(axis=1)).real  #dataph is summed and detected to form TP beam at phase center, multi-pol
         time = self.preamble[::self.nbl,3]
         self.reltime = 24*3600*(time - time[0])      # relative time array in seconds. evla times change...?
-        self.inttime = n.array([self.reltime[i+1] - self.reltime[i] for i in range(len(self.reltime)/5,len(self.reltime)-1)]).mean()
+        self.inttime = n.array([self.reltime[i+1] - self.reltime[i] for i in xrange(len(self.reltime)/5,len(self.reltime)-1)]).mean()
 
         # print summary info
         print
-        print 'Data read!\n'
-        print 'Shape of raw data, flagged, time:'
-        print self.rawdata.shape, self.data.shape, self.reltime.shape
-        self.min = self.dataph.min()
-        self.max = self.dataph.max()
-        print 'Dataph min, max:'
-        print self.min, self.max
+        print 'Shape of raw data, time:'
+        print self.rawdata.shape, self.reltime.shape
 
     def writetrack(self, dmbin, tbin, tshift=0, bgwindow=0, show=0, pol=0):
         """ **Not tested recently** Writes data from track out as miriad visibility file.
@@ -527,11 +532,11 @@ class MiriadReader(Reader):
                 break
 
         l = 0
-        for i in range(len(flags0)):  # iterate over baselines
+        for i in xrange(len(flags0)):  # iterate over baselines
             # write out track, if not flagged
             if n.any(flags0[i]):
                 k = 0
-                for j in range(self.nchan):
+                for j in xrange(self.nchan):
                     if j in self.chans:
                         data[j] = datadiffarr[pol, l, k]
 #                        flags[j] = flags0[i][j]
@@ -601,11 +606,11 @@ class MiriadReader(Reader):
                 break
 
         l = 0
-        for i in range(len(flags0)):  # iterate over baselines
+        for i in xrange(len(flags0)):  # iterate over baselines
             # write out track, if not flagged
             if n.any(flags0[i]):
                 k = 0
-                for j in range(self.nchan):
+                for j in xrange(self.nchan):
                     if j in self.chans:
                         data[j] = datadiffarr[pol, l, k]
 #                        flags[j] = flags0[i][j]
@@ -639,6 +644,7 @@ class MSReader(Reader):
         """
         self.file = file
         self.scan = scan
+        self.nints = nints
 
         # get spw info. either load pickled version (if found) or make new one
         pklname = string.join(file.split('.')[:-1], '.') + '_init.pkl'
@@ -651,8 +657,12 @@ class MSReader(Reader):
             except EOFError:
                 print 'Bad pickle file. Exiting...'
                 return 1
-            scanlist = scansummary['summary'].keys()
-            starttime_mjd = scansummary['summary'][scanlist[scan]]['0']['BeginTime']
+# old way, casa 3.3?
+#            scanlist = scansummary['summary'].keys()
+#            starttime_mjd = scansummary['summary'][scanlist[scan]]['0']['BeginTime']
+# new way, casa 4.0?
+            scanlist = scansummary.keys()
+            starttime_mjd = scansummary[scanlist[scan]]['0']['BeginTime']
             self.nskip = int(nskip*self.nbl)    # number of iterations to skip (for reading in different parts of buffer)
             self.npol = len(selectpol)
         else:
@@ -661,11 +671,19 @@ class MSReader(Reader):
             ms.open(self.file)
             spwinfo = ms.getspectralwindowinfo()
             scansummary = ms.getscansummary()
-            scanlist = scansummary['summary'].keys()
 
-            starttime_mjd = scansummary['summary'][scanlist[scan]]['0']['BeginTime']
-            starttime0 = qa.getvalue(qa.convert(qa.time(qa.quantity(starttime_mjd+0/(24.*60*60),'d'),form=['ymd'], prec=9), 's'))
-            stoptime0 = qa.getvalue(qa.convert(qa.time(qa.quantity(starttime_mjd+0.5/(24.*60*60), 'd'), form=['ymd'], prec=9), 's'))
+# original (general version)
+#            scanlist = scansummary['summary'].keys()
+#            starttime_mjd = scansummary['summary'][scanlist[scan]]['0']['BeginTime']
+#            starttime0 = qa.getvalue(qa.convert(qa.time(qa.quantity(starttime_mjd+0/(24.*60*60),'d'),form=['ymd'], prec=9), 's'))
+#            stoptime0 = qa.getvalue(qa.convert(qa.time(qa.quantity(starttime_mjd+0.5/(24.*60*60), 'd'), form=['ymd'], prec=9), 's'))
+
+# custom for cal5_1b data or casa 4.0?
+            scanlist = scansummary.keys()
+            starttime_mjd = scansummary[scanlist[scan]]['0']['BeginTime']
+            starttime0 = qa.getvalue(qa.convert(qa.time(qa.quantity(starttime_mjd+0/(24.*60*60),'d'),form=['ymd'], prec=9)[0], 's'))[0]
+            stoptime0 = qa.getvalue(qa.convert(qa.time(qa.quantity(starttime_mjd+0.5/(24.*60*60), 'd'), form=['ymd'], prec=9)[0], 's'))[0]
+
             ms.selectinit(datadescid=0)  # initialize to initialize params
             selection = {'time': [starttime0, stoptime0]}
             ms.select(items = selection)
@@ -678,12 +696,13 @@ class MSReader(Reader):
 
             # good baselines
             bls = da['axis_info']['ifr_axis']['ifr_shortname']
-            self.blarr = n.array([[int(bls[i].split('-')[0]),int(bls[i].split('-')[1])] for i in range(len(bls))])
+            self.blarr = n.array([[int(bls[i].split('-')[0]),int(bls[i].split('-')[1])] for i in xrange(len(bls))])
             self.nskip = int(nskip*self.nbl)    # number of iterations to skip (for reading in different parts of buffer)
 
             # set integration time
             ti0 = da['axis_info']['time_axis']['MJDseconds']
-            self.inttime = scansummary['summary'][scanlist[scan]]['0']['IntegrationTime']
+#            self.inttime = scansummary['summary'][scanlist[scan]]['0']['IntegrationTime']  # general way
+            self.inttime = scansummary[scanlist[scan]]['0']['IntegrationTime']   # subset way, or casa 4.0 way?
             self.inttime0 = self.inttime
             print 'Initializing integration time (s):', self.inttime
 
@@ -699,16 +718,21 @@ class MSReader(Reader):
 
         # set desired spw
         if (len(spw) == 1) & (spw[0] == -1):
-            spwlist = range(len(spwinfo['spwInfo']))
+            spwlist = spwinfo['spwInfo'].keys()    # old way
         else:
             spwlist = spw
 
         freq = n.array([])
         for spw in spwlist:
-            nch = spwinfo['spwInfo'][str(spw)]['NumChan']
-            ch0 = spwinfo['spwInfo'][str(spw)]['Chan1Freq']
-            chw = spwinfo['spwInfo'][str(spw)]['ChanWidth']
+# new way
+            nch = spwinfo[str(spw)]['NumChan']
+            ch0 = spwinfo[str(spw)]['Chan1Freq']
+            chw = spwinfo[str(spw)]['ChanWidth']
             freq = n.concatenate( (freq, (ch0 + chw * n.arange(nch)) * 1e-9) )
+# old way
+#            nch = spwinfo['spwInfo'][str(spw)]['NumChan']
+#            ch0 = spwinfo['spwInfo'][str(spw)]['Chan1Freq']
+#            chw = spwinfo['spwInfo'][str(spw)]['ChanWidth']
 
         self.freq = freq[self.chans]
         self.nchan = len(self.freq)
@@ -716,11 +740,13 @@ class MSReader(Reader):
 
         # set requested time range based on given parameters
         timeskip = self.inttime*nskip
-        starttime = qa.getvalue(qa.convert(qa.time(qa.quantity(starttime_mjd+timeskip/(24.*60*60),'d'),form=['ymd'], prec=9), 's'))
-        stoptime = qa.getvalue(qa.convert(qa.time(qa.quantity(starttime_mjd+(timeskip+nints*self.inttime)/(24.*60*60), 'd'), form=['ymd'], prec=9), 's'))
+# new way        
+        starttime = qa.getvalue(qa.convert(qa.time(qa.quantity(starttime_mjd+timeskip/(24.*60*60),'d'),form=['ymd'], prec=9)[0], 's'))[0]
+        stoptime = qa.getvalue(qa.convert(qa.time(qa.quantity(starttime_mjd+(timeskip+nints*self.inttime)/(24.*60*60), 'd'), form=['ymd'], prec=9)[0], 's'))[0]
         print 'First integration of scan:', qa.time(qa.quantity(starttime_mjd,'d'),form=['ymd'],prec=9)
         print
-        print 'Reading scan', str(scanlist[scan]) ,'for times', qa.time(qa.quantity(starttime_mjd+timeskip/(24.*60*60),'d'),form=['hms'], prec=9), 'to', qa.time(qa.quantity(starttime_mjd+(timeskip+nints*self.inttime)/(24.*60*60), 'd'), form=['hms'], prec=9)
+# new way
+        print 'Reading scan', str(scanlist[scan]) ,'for times', qa.time(qa.quantity(starttime_mjd+timeskip/(24.*60*60),'d'),form=['hms'], prec=9)[0], 'to', qa.time(qa.quantity(starttime_mjd+(timeskip+nints*self.inttime)/(24.*60*60), 'd'), form=['hms'], prec=9)[0]
 
         # read data into data structure
         ms.open(self.file)
@@ -747,7 +773,6 @@ class MSReader(Reader):
 
         # Initialize more stuff...
         self.nschan0 = self.nchan
-        self.pulsewidth = self.pulsewidth * n.ones(self.nchan) # pulse width of crab and m31 candidates
 
         # set variables for later writing data **some hacks here**
         self.nspect0 = 1
@@ -765,19 +790,92 @@ class MSReader(Reader):
         self.v = v.transpose() * self.freq.mean() * (1e9/3e8)
         self.w = w.transpose() * self.freq.mean() * (1e9/3e8)
 
-        self.rawdata = newda
-        self.data = self.rawdata[:,:,self.chans]
-        self.dataph = (self.data.mean(axis=3).mean(axis=1)).real  # multi-pol
-        self.min = self.dataph.min()
-        self.max = self.dataph.max()
-        print 'Shape of rawdata, data:'
-        print self.rawdata.shape, self.data.shape
-        print 'Dataph min, max:'
-        print self.min, self.max
-
         # set integration time and time axis
         ti = da['axis_info']['time_axis']['MJDseconds']
         self.reltime = ti - ti[0]
+
+        self.rawdata = newda
+        print 'Shape of raw data, time:'
+        print self.rawdata.shape, self.reltime.shape
+
+
+class SimulationReader(Reader):
+    """ Class for simulating visibility data for transients analysis.
+    """
+
+    def __init__(self):
+        raise NotImplementedError('Cannot instantiate class directly. Use \'pipe\' subclasses.')
+
+    def simulate(self, nints, inttime, chans, freq, bw, array='vla10'):
+        """ Simulates data
+        array is the name of array config, nints is number of ints, inttime is integration duration, chans, freq, bw (in GHz) as normal.
+        array can be 'vla_d' and 'vla10', the latter is the first 10 of vla_d.
+        """
+
+        self.file = 'sim'
+        self.chans = chans
+        self.nints = nints
+        self.nchan = len(chans)
+        print 'Initializing nchan:', self.nchan
+        self.sfreq = freq    # in GHz
+        self.sdf = bw/self.nchan
+        self.npol = 1
+        self.freq = self.sfreq + self.sdf * self.chans
+        self.inttime = inttime   # in seconds
+        self.reltime = inttime*n.arange(nints)
+
+        # antennas and baselines
+        vla_d = 1e3*n.array([[ 0.00305045,  0.03486681],  [ 0.00893224,  0.10209601],  [ 0.01674565,  0.19140365],  [ 0.02615514,  0.29895461],  [ 0.03696303,  0.42248936],  [ 0.04903413,  0.56046269],  [ 0.06226816,  0.7117283 ],  [ 0.07658673,  0.87539034],  [ 0.09192633,  1.05072281],  [ 0.02867032, -0.02007518],  [ 0.08395162, -0.05878355],  [ 0.1573876 , -0.11020398],  [ 0.24582472, -0.17212832],  [ 0.347405  , -0.2432556 ],  [ 0.46085786, -0.32269615],  [ 0.58524071, -0.40978995],  [ 0.71981691, -0.50402122],  [ 0.86398948, -0.60497195],  [-0.03172077, -0.01479164],  [-0.09288386, -0.04331245],  [-0.17413325, -0.08119967],  [-0.27197986, -0.12682629],  [-0.38436803, -0.17923376],  [-0.509892  , -0.23776654],  [-0.64750886, -0.30193834],  [-0.79640364, -0.37136912],  [-0.95591581, -0.44575086]])
+
+        if array == 'vla_d':
+            antloc = vla_d
+        elif array == 'vla10':
+            antloc = vla_d[5:15]    # 5:15 choses inner part  of two arms
+        self.nants = len(antloc)
+        print 'Initializing nants:', self.nants
+        blarr = []; u = []; v = []; w = []
+        for i in range(1, self.nants+1):
+            for j in range(i, self.nants+1):
+                blarr.append([i,j])
+                u.append(antloc[i-1][0] - antloc[j-1][0])   # in meters (like MS, fwiw)
+                v.append(antloc[i-1][1] - antloc[j-1][1])
+                w.append(0.)
+        self.blarr = n.array(blarr)
+
+        self.nbl = len(self.blarr)
+        self.u = n.zeros((nints,self.nbl),dtype='float64')
+        self.v = n.zeros((nints,self.nbl),dtype='float64')
+        self.w = n.zeros((nints,self.nbl),dtype='float64')
+        print 'Initializing nbl:', self.nbl
+        self.ants = n.unique(self.blarr)
+        self.nskip = 0
+
+        # no earth rotation yet
+        for i in range(nints):
+            self.u[i] = n.array(u) * self.freq.mean() * (1e9/3e8)
+            self.v[i] = n.array(v) * self.freq.mean() * (1e9/3e8)
+            self.w[i] = n.array(w) * self.freq.mean() * (1e9/3e8)
+
+        # simulate data
+        self.rawdata = n.zeros((nints,self.nbl,self.nchan,self.npol),dtype='complex64')
+        self.rawdata.real = n.sqrt(self.nchan) * n.random.randn(nints,self.nbl,self.nchan,self.npol)   # normal width=1 after channel mean
+        self.rawdata.imag = n.sqrt(self.nchan) * n.random.randn(nints,self.nbl,self.nchan,self.npol)
+
+        # print summary info
+        print
+        print 'Shape of raw data, time:'
+        print self.rawdata.shape, self.reltime.shape
+
+    def add_transient(self, dl, dm, s, i):
+        """ Add a transient to an integration.
+        dl, dm are relative direction cosines (location) of transient, s is brightness, and i is integration.
+        """
+
+        ang = lambda dl,dm,u,v,freq: (dl*n.outer(u,freq/freq.mean()) + dm*n.outer(v,freq/freq.mean()))  # operates on single time of u,v
+        for pol in range(self.npol):
+            self.data[i,:,:,pol] = self.data[i,:,:,pol] + s * n.exp(-2j*n.pi*ang(dl, dm, self.u[i], self.v[i], self.freq))
+
+        self.dataph = (self.data.mean(axis=3).mean(axis=1)).real  #dataph is summed and detected to form TP beam at phase center, multi-pol
 
 
 class ProcessByIntegration():
@@ -790,10 +888,25 @@ class ProcessByIntegration():
     def prep(self):
         """ Sets up tracks used to select data in time. Setting them early helped speed up dedispersion done elsewhere.
         """
+        print
+        print 'Filtering rawdata to data as masked array...'
+        self.data = n.ma.masked_array(self.rawdata[:self.nints,:, self.chans,:], self.rawdata[:self.nints,:, self.chans,:] == 0j)
+        self.dataph = (self.data.mean(axis=3).mean(axis=1)).real   #dataph is summed and detected to form TP beam at phase center, multi-pol
+        self.min = self.dataph.min()
+        self.max = self.dataph.max()
+        print 'Shape of data:'
+        print self.data.shape
+        print 'Dataph min, max:'
+        print self.min, self.max
+
+        self.freq = self.sfreq + self.sdf * self.chans
+
         self.track0 = self.track(0.)
         self.twidth = 0
         for k in self.track0[1]:
             self.twidth = max(self.twidth, len(n.where(n.array(self.track0[1]) == k)[0]))
+
+        print 'Track width in time: %d. Iteration could step by %d/2.' % (self.twidth, self.twidth)
 
     def track(self, t0 = 0., show=0):
         """ Takes time offset from first integration in seconds.
@@ -813,7 +926,7 @@ class ProcessByIntegration():
         chanbin = []
 
         ontime = n.where(((pulset + pulsedt) >= reltime - tint/2.) & (pulset <= reltime + tint/2.))
-        for ch in range(len(chans)):
+        for ch in xrange(len(chans)):
             timebin = n.concatenate((timebin, ontime[0]))
             chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype='int'))))
 
@@ -841,7 +954,7 @@ class ProcessByIntegration():
         # set up bg track
         if bgwindow:
             # measure max width of pulse (to avoid in bgsub)
-            bgrange = range(tbin -(bgwindow+twidth)/2, tbin-twidth/2) + range(tbin + twidth/2 + 1, tbin + (twidth+bgwindow)/2 + 1)
+            bgrange = range(tbin -(bgwindow/2+twidth)+1, tbin-twidth+1) + range(tbin + twidth, tbin + (twidth+bgwindow/2))
             for k in bgrange:     # build up super track for background subtraction
                 if bgrange.index(k) == 0:   # first time through
                     trackoff = (list(n.array(track_t)+k), track_c)
@@ -906,12 +1019,15 @@ for i in range(0, len(n_a)-2):
 #        bisp = lambda d, ij, jk, ki: n.complex(d[ij] * d[jk] * n.conj(d[ki]))  # without pol axis
 
         triples = self.make_triples()
+        meanbl = self.data.mean(axis=3).mean(axis=2).mean(axis=0)  # find non-zero bls
+        triples = triples[(meanbl[triples][:,0] != 0j) & (meanbl[triples][:,1] != 0j) & (meanbl[triples][:,2] != 0j)]   # take triples with non-zero bls
 
         self.bispectra = n.zeros((len(self.data), len(triples)), dtype='complex')
         truearr = n.ones( (self.npol, self.nbl, len(self.chans)))
         falsearr = n.zeros( (self.npol, self.nbl, len(self.chans)))
 
-        for i in range((bgwindow/2)+self.twidth, len(self.data)-( (bgwindow/2)+self.twidth )):
+        for i in xrange((bgwindow/2)+self.twidth, len(self.data)-( (bgwindow/2)+self.twidth )):
+#        for i in xrange((bgwindow/2)+self.twidth, len(self.data)-( (bgwindow/2)+self.twidth ), max(1,self.twidth)):  # leaves gaps in data
             diff = self.tracksub(i, bgwindow=bgwindow)
 
             if len(n.shape(diff)) == 1:    # no track
@@ -924,7 +1040,7 @@ for i in range(0, len(n_a)-2):
             except ZeroDivisionError:
                 diffmean = n.mean(diff, axis=2)    # if all zeros, just make mean # bit of a hack
 
-            for trip in range(len(triples)):
+            for trip in xrange(len(triples)):
                 ij, jk, ki = triples[trip]
                 self.bispectra[i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)  # Stokes I bispectrum. Note we are averaging after forming bispectrum, so not technically a Stokes I bispectrum.
 
@@ -943,8 +1059,8 @@ for i in range(0, len(n_a)-2):
             print 'Need to make bispectra first.'
             return
 
-        ntr = lambda num: num*(num-1)*(num-2)/6  # theoretical number of triples
-#        ntr = lambda num: n.mean([len(n.where(ba[i] != 0j)[0]) for i in range(len(ba))])   # consider possibility of zeros in data and take mean number of good triples over all times
+#        ntr = lambda num: num*(num-1)*(num-2)/6  # theoretical number of triples
+        ntr = lambda num: len(ba[0,0])  # consider possibility of zeros in data and take mean number of good triples over all times
 
         # using s=S/Q
 #        mu = lambda s: s/(1+s)  # for independent bispectra, as in kulkarni 1989
@@ -974,7 +1090,7 @@ for i in range(0, len(n_a)-2):
 
         # plot snrb lc and expected snr vs. sigb relation
         if show or save:
-            p.figure(1)
+            p.figure()
             ax = p.axes()
             p.subplot(211)
             p.title(str(self.nskip/self.nbl)+' nskip, ' + str(len(cands))+' candidates', transform = ax.transAxes)
@@ -1013,7 +1129,7 @@ for i in range(0, len(n_a)-2):
                 print 'Saving file as ', savename
                 p.savefig(self.pathout+savename)
 
-        return basnr[cands], bastd[cands], cands
+        return basnr[cands], bastd[cands], zip(cands[0],cands[1])
 
     def specmod(self, tbin, bgwindow=4):
         """Calculate spectral modulation for given track.
@@ -1052,14 +1168,31 @@ class ProcessByDispersion():
     def prep(self):
         """ Sets up tracks used to speed up dedispersion code.
         """
+        print
+        print 'Filtering rawdata to data as masked array...'
+        self.data = n.ma.masked_array(self.rawdata[:self.nints,:, self.chans,:], self.rawdata[:self.nints,:, self.chans,:] == 0j)
+        self.dataph = (self.data.mean(axis=3).mean(axis=1)).real   #dataph is summed and detected to form TP beam at phase center, multi-pol
+        self.min = self.dataph.min()
+        self.max = self.dataph.max()
+        print 'Shape of data:'
+        print self.data.shape
+        print 'Dataph min, max:'
+        print self.min, self.max
+
+        self.freq = self.sfreq + self.sdf * self.chans
+
         # set up ur tracks (lol)
         self.dmtrack0 = {}
         self.twidths = {}
-        for dmbin in range(len(self.dmarr)):
-            self.dmtrack0[dmbin] = self.dmtrack(self.dmarr[dmbin],0)
+        for dmbin in xrange(len(self.dmarr)):
+            self.dmtrack0[dmbin] = self.dmtrack(self.dmarr[dmbin],0)  # track crosses high-freq channel in first integration
             self.twidths[dmbin] = 0
             for k in self.dmtrack0[dmbin][1]:
                 self.twidths[dmbin] = max(self.twidths[dmbin], len(n.where(n.array(self.dmtrack0[dmbin][1]) == k)[0]))
+
+        print 'Track width in time: '
+        for dmbin in self.twidths:
+            print 'DM=%.1f, twidth=%d. Iteration could step by %d/2.' % (self.dmarr[dmbin], self.twidths[dmbin], self.twidths[dmbin])
 
     def dmtrack(self, dm = 0., t0 = 0., show=0):
         """ Takes dispersion measure in pc/cm3 and time offset from first integration in seconds.
@@ -1073,13 +1206,14 @@ class ProcessByDispersion():
 
         # given freq, dm, dfreq, calculate pulse time and duration
         pulset_firstchan = 4.2e-3 * dm * self.freq[len(self.chans)-1]**(-2)   # used to start dmtrack at highest-freq unflagged channel
-        pulset = 4.2e-3 * dm * self.freq**(-2) + t0 - pulset_firstchan  # time in seconds
+        pulset_midchan = 4.2e-3 * dm * self.freq[len(self.chans)/2]**(-2)   # used to start dmtrack at highest-freq unflagged channel. fails to find bright j0628 pulse
+        pulset = 4.2e-3 * dm * self.freq**(-2) + t0 - pulset_firstchan  # time in seconds referenced to some frequency (first, mid, last)
         pulsedt = n.sqrt( (8.3e-6 * dm * (1000*self.sdf) * self.freq**(-3))**2 + self.pulsewidth**2)   # dtime in seconds
 
         timebin = []
         chanbin = []
 
-        for ch in range(len(chans)):
+        for ch in xrange(len(chans)):
             ontime = n.where(((pulset[ch] + pulsedt[ch]) >= reltime - tint/2.) & (pulset[ch] <= reltime + tint/2.))
             timebin = n.concatenate((timebin, ontime[0]))
             chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype='int'))))
@@ -1109,7 +1243,7 @@ class ProcessByDispersion():
         # set up bg track
         if bgwindow:
             # measure max width of pulse (to avoid in bgsub)
-            bgrange = range(tbin -(bgwindow+twidth)/2, tbin-twidth/2) + range(tbin + twidth/2 + 1, tbin + (twidth+bgwindow)/2 + 1)
+            bgrange = range(tbin -(bgwindow/2+twidth)+1, tbin-twidth+1) + range(tbin + twidth, tbin + (twidth+bgwindow/2))
             for k in bgrange:     # build up super track for background subtraction
                 if bgrange.index(k) == 0:   # first time through
                     trackoff = (list(n.array(track0)+k), track1)
@@ -1174,34 +1308,37 @@ for i in range(0, len(n_a)-2):
 #        bisp = lambda d, ij, jk, ki: n.complex(d[ij] * d[jk] * n.conj(d[ki]))   # without pol axis
 
         triples = self.make_triples()
+        meanbl = self.data.mean(axis=2).mean(axis=0)   # find bls with no zeros in either pol to ignore in triples
+        triples = triples[n.all(meanbl[triples][:,0] != 0j, axis=1) & n.all(meanbl[triples][:,1] != 0j, axis=1) & n.all(meanbl[triples][:,2] != 0j, axis=1)]   # only take triples if both pols are good. may be smaller than set for an individual pol
 
         # set up arrays for bispectrum and for weighting data (ignoring zeros)
-        self.bispectra = n.zeros((len(self.dmarr), len(self.data), len(triples)), dtype='complex')
+        bispectra = n.zeros((len(self.dmarr), len(self.data), len(triples)), dtype='complex')
         truearr = n.ones( (self.npol, self.nbl, len(self.chans)))
         falsearr = n.zeros( (self.npol, self.nbl, len(self.chans)))
 
         # iterate over dm trials and integrations
-        for d in range(len(self.dmarr)):
+        for d in xrange(len(self.dmarr)):
             twidth = n.round(self.twidths[d])
             dmwidth = int(n.round(n.max(self.dmtrack0[d][0]) - n.min(self.dmtrack0[d][0])))
 
-            for i in range((bgwindow/2)+twidth, len(self.data)-( (bgwindow/2)+twidth+dmwidth )):   # dmwidth avoided at end, others are split on front and back side of time iteration
+            for i in xrange((bgwindow/2)+twidth, len(self.data)-( (bgwindow/2)+twidth+dmwidth )):   # dmwidth avoided at end, others are split on front and back side of time iteration
+#            for i in xrange((bgwindow/2)+twidth, len(self.data)-( (bgwindow/2)+twidth+dmwidth ), max(1,twidth/2)):   # can step by twidth/2, but messes up data products
                 diff = self.tracksub(d, i, bgwindow=bgwindow)
 
                 if len(n.shape(diff)) == 1:    # no track
                     continue
 
                 weightarr = n.where(diff != 0j, truearr, falsearr)  # ignore zeros in mean across channels # bit of a hack
-
                 try:
                     diffmean = n.average(diff, axis=2, weights=weightarr)
                 except ZeroDivisionError:
                     diffmean = n.mean(diff, axis=2)    # if all zeros, just make mean # bit of a hack
 
-                for trip in range(len(triples)):
+                for trip in xrange(len(triples)):
                     ij, jk, ki = triples[trip]
-                    self.bispectra[d, i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)    # Stokes I bispectrum. Note we are averaging after forming bispectrum, so not technically a Stokes I bispectrum.
+                    bispectra[d, i, trip] = bisp(diffmean, ij, jk, ki).mean(axis=0)    # Stokes I bispectrum. Note we are averaging after forming bispectrum, so not technically a Stokes I bispectrum.
             print 'dedispersed for ', self.dmarr[d]
+        self.bispectra = n.ma.masked_array(bispectra, bispectra == 0j)
 
     def detect_bispectra(self, sigma=5., tol=1.3, Q=0, show=0, save=0):
         """ Function to detect transient in bispectra
@@ -1217,8 +1354,8 @@ for i in range(0, len(n_a)-2):
             print 'Need to make bispectra first.'
             return
 
-        ntr = lambda num: num*(num-1)*(num-2)/6   # assuming all triples are present
-#        ntr = lambda bispectra: n.mean([len(n.where(bispectra[0][i] != 0j)[0]) for i in range(len(bispectra[0]))])   # consider possibility of zeros in data and take mean number of good triples over all times. assumes first dm trial is reasonable estimate.
+#        ntr = lambda num: num*(num-1)*(num-2)/6   # assuming all triples are present
+        ntr = lambda num: len(ba[0,0])  # consider possibility of zeros in data and take mean number of good triples over all times
 
         # using s=S/Q
         mu = lambda s: 1.  # for bispectra formed from visibilities
@@ -1230,7 +1367,7 @@ for i in range(0, len(n_a)-2):
         bastd = ba.real.std(axis=2).transpose()
 
         bameanstd = []
-        for dmind in range(len(self.dmarr)):
+        for dmind in xrange(len(self.dmarr)):
             (meanmin,meanmax) = sigma_clip(bamean[:, dmind])  # remove rfi to estimate noise-like parts
             (stdmin,stdmax) = sigma_clip(bastd[:, dmind])
             clipped = n.where((bamean[:, dmind] > meanmin) & (bamean[:, dmind] < meanmax) & (bastd[:, dmind] > stdmin) & (bastd[:, dmind] < stdmax) & (bamean[:, dmind] != 0.0))[0]  # remove rfi and zeros
@@ -1250,12 +1387,12 @@ for i in range(0, len(n_a)-2):
 
         # plot snrb lc and expected snr vs. sigb relation
         if show or save:
-            for dmbin in range(len(self.dmarr)):
+            for dmbin in xrange(len(self.dmarr)):
                 cands_dm = cands[0][n.where(cands[1] == dmbin)[0]]  # find candidates for this dmbin
                 p.figure(range(len(self.dmarr)).index(dmbin)+1)
                 ax = p.axes()
                 p.subplot(211)
-                p.title(str(self.scan) + ' scan, ' + str(self.nskip/self.nbl) + ' nskip, ' + str(dmbin) + ' dmbin, ' + str(len(cands_dm))+' candidates', transform = ax.transAxes)
+                p.title(str(self.nskip/self.nbl) + ' nskip, ' + str(dmbin) + ' dmbin, ' + str(len(cands_dm))+' candidates', transform = ax.transAxes)
                 p.plot(basnr[:,dmbin], 'b.')
                 if len(cands_dm) > 0:
                     p.plot(cands_dm, basnr[cands_dm,dmbin], 'r*')
@@ -1296,14 +1433,14 @@ for i in range(0, len(n_a)-2):
                 if save:
                     if save == 1:
                         savename = self.file.split('.')[:-1]
-                        savename.append(str(self.scan) + '_' + str(self.nskip/self.nbl) + '_' + str(dmbin) + '_bisp.png')
+                        savename.append(str(self.nskip/self.nbl) + '_' + str(dmbin) + '_bisp.png')
                         savename = string.join(savename,'.')
                     elif type(save) == type('hi'):
                         savename = save
                     print 'Saving file as ', savename
                     p.savefig(self.pathout+savename)
 
-        return basnr[cands], bastd[cands], cands
+        return basnr[cands], bastd[cands], zip(cands[0],cands[1])
 
     def specmod(self, dmbin, tbin, bgwindow=4):
         """Calculate spectral modulation for given dmtrack.
@@ -1328,8 +1465,9 @@ for i in range(0, len(n_a)-2):
 
         self.phasedbeam = n.zeros((len(self.dmarr),len(self.reltime)), dtype='float64')
 
-        for i in range(len(self.dmarr)):
-            for j in range(len(self.reltime)):
+        for i in xrange(len(self.dmarr)):
+            for j in xrange(len(self.reltime)):   
+#            for j in xrange(0, len(self.reltime), max(1,self.twidths[i]/2)):   # can also step by twidth/2, but leaves gaps in data products
                 dmtrack = self.dmtrack(dm=self.dmarr[i], t0=self.reltime[j])
                 if ((dmtrack[1][0] == 0) & (dmtrack[1][len(dmtrack[1])-1] == len(self.chans)-1)):   # use only tracks that span whole band
                     truearr = n.ones( (len(dmtrack[0]), self.nbl, self.npol))
@@ -1397,7 +1535,495 @@ for i in range(0, len(n_a)-2):
             if len(peaks[0]) > 0:
                 print 'Peak of %f at DM=%f, t0=%f' % (arr.max(), self.dmarr[peakmax[0][0]], reltime[peakmax[1][0]])
 
-                for i in range(len(peaks[1])):
+                for i in xrange(len(peaks[1])):
+                    ax = p.imshow(arr, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
+                    p.axis((min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
+                    p.plot([reltime[peaks[1][i]]], [self.dmarr[peaks[0][i]]], 'o', markersize=2*arr_snr[peaks[0][i],peaks[1][i]], markerfacecolor='white', markeredgecolor='blue', alpha=0.5)
+
+            p.xlabel('Time (s)', fontsize=12, fontweight='bold')
+            p.ylabel('DM (pc/cm3)', fontsize=12, fontweight='bold')
+            if save:
+                if save == 1:
+                    savename = self.file.split('.')[:-1]
+                    savename.append(str(self.scan) + '_' + str(self.nskip/self.nbl) + '_disp.png')
+                    savename = string.join(savename,'.')
+                elif type(save) == type('hi'):
+                    savename = save
+                print 'Saving file as ', savename
+                p.savefig(self.pathout+savename)
+
+        return peaks,arr[peaks],arr_snr[peaks]
+
+
+class ProcessByDispersion2():
+    """ Class defines methods for pipeline processing for dispersion-based transients searches.
+    Has several optimizations (esp for speed), including:
+    -- dedisperses using data.roll()
+    -- time windowing and bgsubtraction with mexican hat filter convolution
+    -- uses masked_array to flag data
+    -- visibility interpolation in frequency
+    May want to produce data objects for each dm and filter dt...?
+    """
+
+    def __init__(self):
+        raise NotImplementedError('Cannot instantiate class directly. Use \'pipe\' subclasses.')
+
+    def prep(self):
+        """ Sets up tracks used to speed up dedispersion code.
+        """
+        print
+        print 'Filtering rawdata to data as masked array...'
+        self.data = n.ma.masked_array(self.rawdata[:self.nints, :, self.chans], self.rawdata[:self.nints, :, self.chans] == 0j)
+        self.dataph = (self.data.mean(axis=3).mean(axis=1)).real   #dataph is summed and detected to form TP beam at phase center, multi-pol
+        self.min = self.dataph.min()
+        self.max = self.dataph.max()
+        print 'Shape of data:'
+        print self.data.shape
+        print 'Dataph min, max:'
+        print self.min, self.max
+
+        self.freq = self.sfreq + self.sdf * self.chans
+
+        # set up ur tracks (lol)
+        self.dmtrack0 = {}
+        self.twidths = {}
+        self.delay = {}
+        for dmbin in xrange(len(self.dmarr)):
+            self.dmtrack0[dmbin] = self.dmtrack(self.dmarr[dmbin],0)  # track crosses high-freq channel in first integration
+            (trackt, trackc) = self.dmtrack0[dmbin]
+            self.twidths[dmbin] = [len(n.where(trackc == (chan-self.chans[0]))[0]) for chan in self.chans]    # width of track for each unflagged channel
+            self.delay[dmbin] = [n.int(trackt[n.where(trackc == (chan-self.chans[0]))[0][0]]) for chan in self.chans]  # integration delay for each unflagged channel of a given dm.
+
+        print 'Track width in time: '
+        for dmbin in self.twidths:
+            print 'DM=%.1f, max(twidth)=%d. Iteration could step by %d/2.' % (self.dmarr[dmbin], max(self.twidths[dmbin]), max(self.twidths[dmbin]))
+
+    def dmtrack(self, dm = 0., t0 = 0., show=0):
+        """ Takes dispersion measure in pc/cm3 and time offset from first integration in seconds.
+        t0 defined at first (unflagged) channel. Need to correct by flight time from there to freq=0 for true time.
+        Returns an array of (timebin, channel) to select from the data array.
+        """
+
+        reltime = self.reltime
+        chans = self.chans
+        tint = self.inttime
+
+        # given freq, dm, dfreq, calculate pulse time and duration 
+        pulset_firstchan = 4.2e-3 * dm * self.freq[len(self.chans)-1]**(-2)   # used to start dmtrack at highest-freq unflagged channel
+        pulset_midchan = 4.2e-3 * dm * self.freq[len(self.chans)/2]**(-2)   # used to start dmtrack at highest-freq unflagged channel. fails to find bright j0628 pulse
+        pulset = 4.2e-3 * dm * self.freq**(-2) + t0 - pulset_firstchan  # time in seconds referenced to some frequency (first, mid, last)
+        pulsedt = n.sqrt( (8.3e-6 * dm * (1000*self.sdf) * self.freq**(-3))**2 + self.pulsewidth**2)   # dtime in seconds
+
+        timebin = []
+        chanbin = []
+
+        for ch in xrange(len(chans)):
+            ontime = n.where(((pulset[ch] + pulsedt[ch]) >= reltime - tint/2.) & (pulset[ch] <= reltime + tint/2.))
+            timebin = n.concatenate((timebin, ontime[0]))
+            chanbin = n.concatenate((chanbin, (ch * n.ones(len(ontime[0]), dtype='int'))))
+
+        track = (list(timebin), list(chanbin))
+
+        if show:
+            p.plot(track[0], track[1], 'w*')
+
+        return track
+
+    def time_filter(self, width, kernel='t', bgwindow=4, show=0):
+        """ Replaces data array with filtered version via convolution in time. Note that this has trouble with zeroed data.
+        kernel specifies the convolution kernel. 'm' for mexican hat (a.k.a. ricker, effectively does bg subtraction), 'g' for gaussian. 't' for a tophat. 'b' is a tophat with bg subtraction (or square 'm'). 'w' is a tophat with width that varies with channel, as kept in 'self.twidth[dmbin]'.
+        width is the kernel width with length nchan. should be tuned to expected pulse width in each channel.
+        bgwindow is used by 'b' only.
+        An alternate design for this method would be to make a new data array after filtering, so this can be repeated for many assumed widths without reading data in anew. That would require more memory, so going with repalcement for now.
+        """
+
+        if type(width) != types.ListType:
+            width = [width] * len(self.chans)
+
+        # time filter by convolution. functions have different normlizations. m has central peak integral=1 and total is 0. others integrate to 1, so they don't do bg subtraction.
+        kernelset = {}  # optionally could make set of kernels. one per width needed. (used only by 'w' for now).
+
+        if kernel == 'm':
+            from scipy import signal
+            print 'Applying mexican hat filter. Note that effective width is somewhat larger than equivalent tophat width.'
+            for w in n.unique(width):
+                kernel = signal.wavelets.ricker(len(self.data), w)     # mexican hat (ricker) function can have given width and integral=0, so good for smoothing in time and doing bg-subtraction at same time! width of averaging is tied to width of bgsub though...
+                kernelset[w] = kernel/n.where(kernel>0, kernel, 0).sum()         # normalize to have peak integral=1, thus outside integral=-1.
+        elif kernel == 't':
+            import math
+            print 'Applying tophat filter.'
+            for w in n.unique(width):
+                kernel = n.zeros(len(self.data))                    # tophat.
+                onrange = range(len(kernel)/2 - w/2, len(kernel)/2 + int(math.ceil(w/2.)))
+                kernel[onrange] = 1.
+                kernelset[w] = kernel/n.where(kernel>0, kernel, 0).sum()         # normalize to have peak integral=1, thus outside integral=-1.
+        elif kernel == 'b':
+            import math
+            print 'Applying tophat filter with bg subtraction (square mexican hat).'
+            for w in n.unique(width):
+                kernel = n.zeros(len(self.data))                    # tophat.
+                onrange = range(len(kernel)/2 - w/2, len(kernel)/2 + int(math.ceil(w/2.)))
+                kernel[onrange] = 1.
+                offrange = range(len(kernel)/2 - (bgwindow/2+w)+1, len(kernel)/2-w+1) + range(len(kernel)/2 + w, len(kernel)/2 + (w+bgwindow/2))
+                offrange = range(len(kernel)/2 - (bgwindow+w)/2, len(kernel)/2-w/2) + range(len(kernel)/2 + int(math.ceil(w/2.)), len(kernel)/2 + int(math.ceil((w+bgwindow)/2.)))
+                kernel[offrange] = -1.
+                posnorm = n.where(kernel>0, kernel, 0).sum()           # find normalization of positive
+                negnorm = n.abs(n.where(kernel<0, kernel, 0).sum())    # find normalization of negative
+                kernelset[w] = n.where(kernel>0, kernel/posnorm, kernel/negnorm)    # pos and neg both sum to 1/-1, so total integral=0
+        elif kernel == 'g':
+            from scipy import signal
+            print 'Applying gaussian filter. Note that effective width is much larger than equivalent tophat width.'
+            for w in n.unique(width):
+                kernel = signal.gaussian(len(self.data), w)     # gaussian. peak not quite at 1 for widths less than 3, so it is later renormalized.
+                kernelset[w] = kernel / (w * n.sqrt(2*n.pi))           # normalize to pdf, not peak of 1.
+        elif kernel == 'w':
+            import math
+            print 'Applying tophat filter that varies with channel.'
+            for w in n.unique(width):
+                kernel = n.zeros(len(self.data))                    # tophat.
+                onrange = range(len(kernel)/2 - w/2, len(kernel)/2 + int(math.ceil(w/2.)))
+                kernel[onrange] = 1.
+                kernelset[w] = kernel/n.where(kernel>0, kernel, 0).sum()         # normalize to have peak integral=1, thus outside integral=-1.
+
+        if show:
+            for kernel in kernelset.values():
+                p.plot(kernel,'.')
+            p.title('Time filter kernel')
+            p.show()
+
+        # take ffts (in time)
+        datafft = n.fft.fft(self.data, axis=0)
+        kernelsetfft = {}
+        for w in n.unique(width):
+            kernelsetfft[w] = n.fft.fft(n.roll(kernelset[w], len(self.data)/2))   # seemingly need to shift kernel to have peak centered near first bin if convolving complex array (but not for real array?)
+
+        # product of ffts
+        for i in range(self.nbl):    # can't find matrix product I need, so iterating over nbl, chans, npol
+            for j in range(len(self.chans)):
+                for k in range(self.npol):
+                    datafft[:,i,j,k] = datafft[:,i,j,k]*kernelsetfft[width[j]]    # index fft kernel by twidth
+
+        # ifft to restore time series
+        self.data = n.fft.ifft(datafft, axis=0)     # replace data with time-convolved data
+        self.data = n.ma.masked_array(self.data, self.data == 0j)
+        self.dataph = (self.data.mean(axis=3).mean(axis=1)).real
+
+    def dedisperse(self, dmbin):
+        """ Creates dedispersed visibilities integrated over frequency.
+        Uses ur track for each dm, then shifts by tint. Faster than using n.where to find good integrations for each trial, but assumes int-aligned pulse.
+        """
+
+        dddata = n.zeros(shape=self.data.shape, dtype='complex')
+        twidth = self.twidths[dmbin]
+        delay = self.delay[dmbin]
+
+        # dedisperse by rolling time axis for each channel
+        for i in xrange(len(self.chans)):
+            dddata[:,:,i,:] = n.roll(self.data[:,:,i,:], -delay[i], axis=0)
+
+        return n.ma.masked_array(dddata, dddata == 0j)
+
+    def time_mean(self, width):
+        """ Tophat mean of width for each channel (as in self.twidths[dmbin])
+        """
+        import math
+
+        for i in range(len(self.data)):
+            for j in range(len(self.chans)):
+                self.data[i,:,j,:] = self.data[i - width[j]/2 : i + int(math.ceil(width[j]/2.)), :, j, :].mean(axis=0)
+
+    def tracksub(self, dmbin, tbin):
+        """ Simplistic reproduction of tracksub used in older version of this class.
+        Does not have time integration.
+        """
+
+        dddata = self.dedisperse(dmbin)
+        return n.rollaxis(dddata[tbin], 2)
+
+    def spectralInterpolate(self, Y, axis=0, maxturns=1, turnIncrement=0.125, weightNorm=2):
+        """ Function to interpolate visibilities across the bandwidth using an FFT.
+        From LANL colleagues Scott vd Wiel and Earl Lawrence.
+        Y is array of visibilities with one axis of frequency. Dimensions are 1d, 3d, or 4d (self.data-like)
+        axis defines spectral axis over which iterpolation is done. assumptions for input data: for 0, array in freq, for 2, is self.data structure.
+        maxturns is the number of phase wraps expected across band. This affects sensitivity of interpolation, since it effectively is a search space.
+        """
+	
+	if maxturns==0:
+            return(Y.mean(axis=axis))
+
+	# 1:  DFT
+	# Number of visibilities
+	nr = Y.shape[axis]
+        t0 = nr/2
+	# Total length for fft
+	nt = nr/turnIncrement
+	# Half the number of Fourier frequencies considered
+	nf = min(nt/2, maxturns/turnIncrement)
+
+	if nf==nt/2:
+            freqID = range(int(nt))
+	else:
+            freqID = range(int(nf+1));
+            freqID.extend(range(int(nt-nf),int(nt)))
+
+	# Fourier frequencies and rotation vector
+	omega = n.array(freqID)/nt
+	rotation = n.exp(2*n.pi*omega*t0*1j)
+
+	# Some stuff that creates F
+	F = n.fft.fft(Y, n=int(nt), axis=axis)
+	F = F.take(freqID, axis=axis)
+	F = n.sqrt(2)*F/nr
+
+	# 2:  Calculate weights	
+        # 3:  Rotate FFT per frequency, weight, and sum across frequencies
+	W = n.abs(F)
+        if axis == 0:                              # assume single visibility array
+            W = W/W.max()
+            W = W**weightNorm
+            W = W/W.sum()
+            Yhat = (rotation*(W*F)).sum(axis=axis)
+        elif axis == 2:                               # assume structure of self.data
+            W = W/W.max(axis=axis)[:, :, n.newaxis]
+            W = W**weightNorm
+            W = W/W.sum(axis=axis)[:, :, n.newaxis]
+            Yhat = ((W*F)*rotation[n.newaxis , n.newaxis, :, n.newaxis]).sum(axis=axis)
+
+	return Yhat
+
+    def make_bispectra(self, stokes='postbisp', maxturns=0):
+        """ Makes numpy array of bispectra for each integration.
+        stokes defines how polarizations are used (assumes two polarizations): 
+          'postbisp' means form bispectra for each pol, then average pols. 
+          'prebisp' means average visibility pols, then form bispectra.
+          'noavg' means calc for both stokes and store in bispectrum array
+          an index (0,1) means take that index from pol axis.
+          maxturns determines how to take visibility mean across channels. if > 0, does spectral interpolation (and loses sensitivity!).
+        """
+
+        bisp = lambda d: d[:,:,0] * d[:,:,1] * n.conj(d[:,:,2])    # bispectrum for data referenced by triple (data[:,triples])
+
+        # set up triples and arrays for bispectrum considering flagged baselines (only having zeros).
+        triples = self.make_triples()
+        meanbl = self.data.mean(axis=2).mean(axis=0)   # find bls with no zeros in either pol to ignore in triples
+        triples = triples[n.all(meanbl[triples][:,0] != 0j, axis=1) & n.all(meanbl[triples][:,1] != 0j, axis=1) & n.all(meanbl[triples][:,2] != 0j, axis=1) == True]   # only take triples if both pols are good. may be smaller than set for an individual pol
+
+        # need to select path based on how polarization is handled. assumes only dual-pol data.
+        print 'Bispectrum made for stokes =', stokes
+        if ( (stokes == 'postbisp') | (stokes == 'prebisp') | (stokes == 'noavg') ):      # case of combining two stokes
+            bispectra = n.zeros((len(self.dmarr), len(self.data), len(triples)), dtype='complex')
+        elif (type(stokes) == types.IntType):          # case of using single pol
+            if stokes >= self.npol:
+                raise IndexError, 'Stokes parameter larger than number of pols in data.'
+            bispectra = n.zeros((len(self.dmarr), len(self.data), len(triples)), dtype='complex')
+        elif stokes == 'noavg':
+            bispectra = n.zeros((len(self.dmarr), len(self.data), len(triples), self.npol), dtype='complex')
+
+        # iterate over dm trials
+        for dmbin in xrange(len(self.dmarr)):
+
+            if maxturns == 0:
+                dddata = self.dedisperse(dmbin).mean(axis=2)   # average over channels
+            elif maxturns > 0:
+                dddata = self.spectralInterpolate(self.dedisperse(dmbin), axis=2, maxturns=maxturns)   # interpolate over channels using fft
+
+            if stokes == 'prebisp':
+                dddata = dddata.mean(axis=2)
+                bispectra[dmbin] = bisp(dddata[:, triples])
+            elif stokes == 'postbisp':
+                bispectra[dmbin] = bisp(dddata[:, triples]).mean(axis=2)
+            elif stokes == 'noavg':
+                bispectra[dmbin] = bisp(dddata[:, triples])
+            elif type(stokes) == type(0):
+                bispectra[dmbin] = bisp(dddata[:, triples, stokes])
+
+            print 'dedispersed for ', self.dmarr[dmbin]
+        self.bispectra = n.ma.masked_array(bispectra, bispectra == 0j)
+
+    def detect_bispectra(self, sigma=5., tol=1.3, Q=0, show=0, save=0):
+        """ Function to detect transient in bispectra
+        sigma gives the threshold for SNR_bisp (apparent). 
+        tol gives the amount of tolerance in the sigma_b cut for point-like sources (rfi filter).
+        Q is noise per baseline and can be input. Otherwise estimated from data.
+        save=0 is no saving, save=1 is save with default name, save=<string>.png uses custom name (must include .png). 
+        """
+
+        try:
+            ba = self.bispectra
+        except AttributeError:
+            print 'Need to make bispectra first.'
+            return
+
+#        ntr = lambda num: num*(num-1)*(num-2)/6   # assuming all triples are present
+        ntr = lambda num: len(ba[0,0])  # assume only good triples are present and use array size as input for noise estimate
+
+        # using s=S/Q
+        mu = lambda s: 1.  # for bispectra formed from visibilities
+        sigbQ3 = lambda s: n.sqrt((1 + 3*mu(s)**2) + 3*(1 + mu(s)**2)*s**2 + 3*s**4)  # from kulkarni 1989, normalized by Q**3, also rogers et al 1995
+        s = lambda basnr, nants: (2.*basnr/n.sqrt(ntr(nants)))**(1/3.)  # see rogers et al. 1995 for factor of 2
+
+        # measure SNR_bl==Q from sigma clipped times with normal mean and std of bispectra. put into time,dm order
+        bamean = ba.real.mean(axis=2).transpose()
+        bastd = ba.real.std(axis=2).transpose()
+
+        bameanstd = []
+        for dmind in xrange(len(self.dmarr)):
+            (meanmin,meanmax) = sigma_clip(bamean[:, dmind])  # remove rfi to estimate noise-like parts
+            (stdmin,stdmax) = sigma_clip(bastd[:, dmind])
+            clipped = n.where((bamean[:, dmind] > meanmin) & (bamean[:, dmind] < meanmax) & (bastd[:, dmind] > stdmin) & (bastd[:, dmind] < stdmax) & (bamean[:, dmind] != 0.0))[0]  # remove rfi and zeros
+            bameanstd.append(ba[dmind][clipped].real.mean(axis=1).std())
+
+        bameanstd = n.array(bameanstd)
+        basnr = bamean/bameanstd    # = S**3/(Q**3 / n.sqrt(n_tr)) = s**3 * n.sqrt(n_tr)
+        if Q:
+            print 'Using given Q =', Q
+        else:
+            Q = ((bameanstd/2.)*n.sqrt(ntr(self.nants)))**(1/3.)
+        #        Q = n.median( bastd[clipped]**(1/3.) )              # alternate for Q
+            print 'Estimating noise per baseline from data. Q (per DM) =', Q
+
+        # detect
+        cands = n.where( (bastd/Q**3 < tol*sigbQ3(s(basnr, self.nants))) & (basnr > sigma) )  # get compact sources with high snr
+
+        # plot snrb lc and expected snr vs. sigb relation
+        if show or save:
+            for dmbin in xrange(len(self.dmarr)):
+                cands_dm = cands[0][n.where(cands[1] == dmbin)[0]]  # find candidates for this dmbin
+                p.figure(range(len(self.dmarr)).index(dmbin)+1)
+                ax = p.axes()
+                p.subplot(211)
+                p.title(str(self.nskip/self.nbl) + ' nskip, ' + str(dmbin) + ' dmbin, ' + str(len(cands_dm))+' candidates', transform = ax.transAxes)
+                p.plot(basnr[:,dmbin], 'b.')
+                if len(cands_dm) > 0:
+                    p.plot(cands_dm, basnr[cands_dm,dmbin], 'r*')
+                    p.ylim(-2*basnr[cands_dm,dmbin].max(),2*basnr[cands_dm,dmbin].max())
+                p.xlabel('Integration',fontsize=12,fontweight="bold")
+                p.ylabel('SNR_b',fontsize=12,fontweight="bold")
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.spines['bottom'].set_position(('outward', 20))
+                ax.spines['left'].set_position(('outward', 30))
+                ax.yaxis.set_ticks_position('left')
+                ax.xaxis.set_ticks_position('bottom')
+                p.subplot(212)
+                p.plot(bastd[:,dmbin]/Q[dmbin]**3, basnr[:,dmbin], 'b.')
+
+                # plot reference theory lines
+                smax = s(basnr[:,dmbin].max(), self.nants)
+                sarr = smax*n.arange(0,101)/100.
+                p.plot(sigbQ3(sarr), 1/2.*sarr**3*n.sqrt(ntr(self.nants)), 'k')
+                p.plot(tol*sigbQ3(sarr), 1/2.*sarr**3*n.sqrt(ntr(self.nants)), 'k--')
+                p.plot(bastd[cands_dm,dmbin]/Q[dmbin]**3, basnr[cands_dm,dmbin], 'r*')
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.spines['bottom'].set_position(('outward', 20))
+                ax.spines['left'].set_position(('outward', 30))
+                ax.yaxis.set_ticks_position('left')
+                ax.xaxis.set_ticks_position('bottom')
+
+                if len(cands_dm) > 0:
+                    p.axis([0, tol*sigbQ3(s(basnr[cands_dm,dmbin].max(), self.nants)), -0.5*basnr[cands_dm,dmbin].max(), 1.1*basnr[cands_dm,dmbin].max()])
+
+                    # show spectral modulation next to each point
+                    for candint in cands_dm:
+                        sm = n.single(round(self.specmod(dmbin,candint),1))
+                        p.text(bastd[candint,dmbin]/Q[dmbin]**3, basnr[candint,dmbin], str(sm), horizontalalignment='right', verticalalignment='bottom')
+                p.xlabel('sigma_b/Q^3',fontsize=12,fontweight="bold")
+                p.ylabel('SNR_b',fontsize=12,fontweight="bold")
+                if save:
+                    if save == 1:
+                        savename = self.file.split('.')[:-1]
+                        savename.append(str(self.nskip/self.nbl) + '_' + str(dmbin) + '_bisp.png')
+                        savename = string.join(savename,'.')
+                    elif type(save) == type('hi'):
+                        savename = save
+                    print 'Saving file as ', savename
+                    p.savefig(self.pathout+savename)
+
+        return basnr[cands], bastd[cands], zip(cands[0],cands[1])
+
+    def specmod(self, dmbin, tbin, bgwindow=4):
+        """Calculate spectral modulation for given dmtrack.
+        Narrow RFI has large (>5) modulation, while spectrally broad emission has low modulation.
+        See Spitler et al 2012 for details.
+        """
+
+#        smarr = n.zeros(len(self.dataph))  # uncomment to do specmod lightcurve
+#        for int in range(len(self.dataph)-bgwindow):
+        bfspec = self.dedisperse(dmbin)[tbin].mean(axis=0).real
+        sm = n.sqrt( ((bfspec**2).mean() - bfspec.mean()**2) / bfspec.mean()**2 )
+
+        return sm
+
+    def make_phasedbeam(self):
+        """ Integrates data at dmtrack for each pair of elements in dmarr, time.
+        Not threaded.  Uses dmthread directly.
+        Stores mean of detected signal after dmtrack, effectively forming beam at phase center.
+        Ignores zeros in any bl, freq, time.
+        """
+
+        self.phasedbeam = n.zeros((len(self.dmarr),len(self.reltime)), dtype='float64')
+
+        for i in xrange(len(self.dmarr)):
+            self.phasedbeam[i] = self.dedisperse(dmbin=i).mean(axis=3).mean(axis=2).mean(axis=1).real               # dedisperse and mean
+            print 'dedispersed for ', self.dmarr[i]
+
+    def detect_phasedbeam(self, sig=5., show=1, save=0, clipplot=1):
+        """ Method to find transients in dedispersed data (in dmt0 space).
+        Clips noise then does sigma threshold.
+        returns array of candidates transients.
+        Optionally plots beamformed lightcurve.
+        save=0 is no saving, save=1 is save with default name, save=<string>.png uses custom name (must include .png). 
+        """
+
+        try:
+            arr = self.phasedbeam
+        except AttributeError:
+            print 'Need to make phasedbeam first.'
+            return
+
+        reltime = self.reltime
+
+        # single iteration of sigma clip to find mean and std, skipping zeros
+        mean = arr.mean()
+        std = arr.std()
+        print 'initial mean, std:  ', mean, std
+        amin,amax = sigma_clip(arr.flatten())
+        clipped = arr[n.where((arr < amax) & (arr > amin) & (arr != 0.))]
+        mean = clipped.mean()
+        std = clipped.std()
+        print 'final mean, sig, std:  ', mean, sig, std
+
+        # Recast arr as significance array
+        arr_snr = (arr-mean)/std   # for real valued trial output, gaussian dis'n, zero mean
+
+        # Detect peaks
+        peaks = n.where(arr_snr > sig)
+        peakmax = n.where(arr_snr == arr_snr.max())
+        print 'peaks:  ', peaks
+
+        # Plot
+        if show:
+            p.clf()
+            ax = p.axes()
+            ax.set_position([0.2,0.2,0.7,0.7])
+            if clipplot:
+                im = p.imshow(arr, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)), vmin=amin, vmax=amax)
+            else:
+                im = p.imshow(arr, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
+            cb = p.colorbar(im)
+            cb.set_label('Flux Density (Jy)',fontsize=12,fontweight="bold")
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['bottom'].set_position(('outward', 20))
+            ax.spines['left'].set_position(('outward', 30))
+            ax.yaxis.set_ticks_position('left')
+            ax.xaxis.set_ticks_position('bottom')
+
+            if len(peaks[0]) > 0:
+                print 'Peak of %f at DM=%f, t0=%f' % (arr.max(), self.dmarr[peakmax[0][0]], reltime[peakmax[1][0]])
+
+                for i in xrange(len(peaks[1])):
                     ax = p.imshow(arr, aspect='auto', origin='lower', interpolation='nearest', extent=(min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
                     p.axis((min(reltime),max(reltime),min(self.dmarr),max(self.dmarr)))
                     p.plot([reltime[peaks[1][i]]], [self.dmarr[peaks[0][i]]], 'o', markersize=2*arr_snr[peaks[0][i],peaks[1][i]], markerfacecolor='white', markeredgecolor='blue', alpha=0.5)
@@ -1428,14 +2054,14 @@ class pipe_msint(MSReader, ProcessByIntegration):
     Can also set some parameters as key=value pairs.
     """
 
-    def __init__(self, file, profile='default', nints=1000, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
-        self.set_params(profile=profile, kargs=kargs)
+    def __init__(self, file, profile='default', nints=1024, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
+        self.set_params(profile=profile, **kargs)
         self.read(file=file, nints=nints, nskip=nskip, spw=spw, selectpol=selectpol, scan=scan, datacol=datacol)
         self.prep()
 
 
 class pipe_msdisp(MSReader, ProcessByDispersion):
-    """ Create pipeline object for reading in MS data and doing integration-based analysis with dedispersion.
+    """ Create pipeline object for reading in MS data and doing dispersion-based analysis
     nints is the number of integrations to read.
     nskip is the number of integrations to skip before reading.
     nocal,nopass are options for applying calibration while reading Miriad data.
@@ -1446,8 +2072,27 @@ class pipe_msdisp(MSReader, ProcessByDispersion):
     Can also set some parameters as key=value pairs.
     """
 
-    def __init__(self, file, profile='default', nints=1000, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
-        self.set_params(profile=profile, kargs=kargs)
+    def __init__(self, file, profile='default', nints=1024, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
+        self.set_params(profile=profile, **kargs)
+        self.read(file=file, nints=nints, nskip=nskip, spw=spw, selectpol=selectpol, scan=scan, datacol=datacol)
+        self.prep()
+
+
+class pipe_msdisp2(MSReader, ProcessByDispersion2):
+    """ Create pipeline object for reading in MS data and doing dispersion-based analysis
+    This version uses optimized code for dedispersion, which also has some syntax changes.
+    nints is the number of integrations to read.
+    nskip is the number of integrations to skip before reading.
+    nocal,nopass are options for applying calibration while reading Miriad data.
+    spw is list of spectral windows to read from MS.
+    selectpol is list of polarization product names for reading from MS
+    scan is zero-based selection of scan for reading from MS. It is based on scan order, not actual scan number.
+    datacol is the name of the data column name to read from the MS.
+    Can also set some parameters as key=value pairs.
+    """
+
+    def __init__(self, file, profile='default', nints=1024, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
+        self.set_params(profile=profile, **kargs)
         self.read(file=file, nints=nints, nskip=nskip, spw=spw, selectpol=selectpol, scan=scan, datacol=datacol)
         self.prep()
 
@@ -1460,23 +2105,53 @@ class pipe_mirint(MiriadReader, ProcessByIntegration):
     Can also set some parameters as key=value pairs.
     """
 
-    def __init__(self, file, profile='default', nints=1000, nskip=0, nocal=False, nopass=False, **kargs):
-        self.set_params(profile=profile, kargs=kargs)
+    def __init__(self, file, profile='default', nints=1024, nskip=0, nocal=False, nopass=False, **kargs):
+        self.set_params(profile=profile, **kargs)
         self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
         self.prep()
 
 
 class pipe_mirdisp(MiriadReader, ProcessByDispersion):
-    """ Create pipeline object for reading in Miriad data and doing integration-based analysis without dedispersion.
+    """ Create pipeline object for reading in Miriad data and doing dispersion-based analysis.
     nints is the number of integrations to read.
     nskip is the number of integrations to skip before reading.
     nocal,nopass are options for applying calibration while reading Miriad data.
     Can also set some parameters as key=value pairs.
     """
 
-    def __init__(self, file, profile='default', nints=1000, nskip=0, nocal=False, nopass=False, **kargs):
-        self.set_params(profile=profile, kargs=kargs)
+    def __init__(self, file, profile='default', nints=1024, nskip=0, nocal=False, nopass=False, **kargs):
+        self.set_params(profile=profile, **kargs)
         self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
+        self.prep()
+
+
+class pipe_mirdisp2(MiriadReader, ProcessByDispersion2):
+    """ Create pipeline object for reading in Miriad data and doing dispersion-based analysis.
+    This version uses optimized code for dedispersion, which also has some syntax changes.
+    nints is the number of integrations to read.
+    nskip is the number of integrations to skip before reading.
+    nocal,nopass are options for applying calibration while reading Miriad data.
+    Can also set some parameters as key=value pairs.
+    """
+
+    def __init__(self, file, profile='default', nints=1024, nskip=0, nocal=False, nopass=False, **kargs):
+        self.set_params(profile=profile, **kargs)
+        self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
+        self.prep()
+
+
+class pipe_simdisp2(SimulationReader, ProcessByDispersion2):
+    """ Create pipeline object for simulating data and doing dispersion-based analysis.
+    This version uses optimized code for dedispersion, which also has some syntax changes.
+    nints is the number of integrations to read.
+    nskip is the number of integrations to skip before reading.
+    nocal,nopass are options for applying calibration while reading Miriad data.
+    Can also set some parameters as key=value pairs.
+    """
+
+    def __init__(self, profile='default', nints=256, inttime=0.001, chans=n.arange(64), freq=1.4, bw=0.128, array='vla10', **kargs):
+        self.set_params(profile=profile, chans=chans, **kargs)
+        self.simulate(nints, inttime, chans, freq, bw, array)
         self.prep()
 
 
@@ -1490,5 +2165,6 @@ def sigma_clip(arr,sigma=3):
         arr = arr[cliparr]
         mean = arr.mean()
         std = arr.std()
-        cliparr = n.where((arr < mean + sigma*std) & (arr > mean - sigma*std))[0]
+        cliparr = n.where((arr < mean + sigma*std) & (arr > mean - sigma*std) & (arr != 0) )[0]
+#        print 'Clipping %d from array of length %d' % (len(arr) - len(cliparr), len(arr))
     return mean - sigma*std, mean + sigma*std
