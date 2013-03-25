@@ -12,6 +12,13 @@ Uses variety of libraries for importing visibility data and building Python nump
 Supported data formats include Miriad and Measurement Sets. Uses CASA, miriad-python, or (soon) pyrap.
 Focus is on building pipelines for searching for radio transients in visibilities.
 
+Requirements:
+-- python (probably version >2.5..?)
+-- numpy, matplotlib
+-- CASA 4.0 or higher (to read MS)
+-- Miriad (to read Miriad format data)
+-- aipy (to image data)
+
 The script defines a master class and a set of subclasses for different data formats and types of analysis.
 Aside from the two major data formats, the two types of analysis are either:
 -- integration based: the transient can be indexed by an integration (but may be longer than just one), or
