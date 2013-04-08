@@ -1105,6 +1105,7 @@ for i in range(0, len(n_a)-2):
 
         # detect
         cands = n.where( (bastd/Q**3 < tol*sigbQ3(s(basnr, self.nants))) & (basnr > sigma) )[0]  # define compact sources with good snr
+        print cands
 
         # plot snrb lc and expected snr vs. sigb relation
         if show or save:
@@ -1147,7 +1148,7 @@ for i in range(0, len(n_a)-2):
                 print 'Saving file as ', savename
                 p.savefig(self.pathout+savename)
 
-        return basnr[cands], bastd[cands], zip(cands[0],cands[1])
+        return basnr[cands], bastd[cands], cands
 
     def specmod(self, tbin, bgwindow=4):
         """Calculate spectral modulation for given track.
