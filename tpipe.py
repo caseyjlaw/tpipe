@@ -14,6 +14,7 @@ from os.path import join
 import pickle
 import numpy as n
 import pylab as p
+#import ephem,pywcs
 
 # set up libraries for reading and imaging visibility data
 try:
@@ -69,45 +70,65 @@ class Reader:
         self.params = {
             'default' : {
                 'chans': n.array(range(5,59)),   # channels to read
-                'dmarr' : [44.,88.],      # dm values to use for dedispersion (only for some subclasses)
+                'dmarr' : [44.,88.],     # dm values to use for dedispersion (only for some subclasses)
                 'pulsewidth' : 0.0,      # width of pulse in time (seconds)
                 'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
                 'pathout': './',         # place to put output files
-                'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
+                'beam_params': [0],      # flag=0 or list of parameters for twodgaussian parameter definition
+                'long': -107.6177,       # longitude of the array center (vla)
+                'lat': 34.07875          # latitude of the array center (vla)
                 },
             'vlacrab' : {
                 'chans': n.array(range(5,59)),   # channels to read
-                'dmarr' : [29.,58.],      # dm values to use for dedispersion (only for some subclasses)
+                'dmarr' : [29.,58.],     # dm values to use for dedispersion (only for some subclasses)
                 'pulsewidth' : 0.0,      # width of pulse in time (seconds)
                 'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
                 'pathout': './',         # place to put output files
-                'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
+                'beam_params': [0],      # flag=0 or list of parameters for twodgaussian parameter definition
+                'long': -107.6177,       # longitude of the array center
+                'lat': 34.07875          # latitude of the array center
                 },
             'psa' : {
                 'chans': n.array(range(140,150)),   # channels to read
-                'dmarr' : [0.],      # dm values to use for dedispersion (only for some subclasses)
+                'dmarr' : [0.],          # dm values to use for dedispersion (only for some subclasses)
                 'pulsewidth' : 0.0,      # width of pulse in time (seconds)
                 'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
                 'pathout': './',         # place to put output files
-                'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
+                'beam_params': [0],      # flag=0 or list of parameters for twodgaussian parameter definition
+                'long': 21.411,          # longitude of the array center
+                'lat': -30.721           # latitude of the array center
                 },
             'pocob0329' : {
                 'chans': n.array(range(5,59)),   # channels to read
                 'dmarr' : [0, 13.4, 26.8, 40.2, 53.5],      # dm values to use for dedispersion (only for some subclasses)
                 'pulsewidth' : 0.005,      # width of pulse in time (seconds)
+                'approxuvw' : True,        # flag to make template visibility file to speed up writing of dm track data
+                'pathout': './',           # place to put output files
+                'beam_params': [0],        # flag=0 or list of parameters for twodgaussian parameter definition
+                'long': -121.470,          # longitude of the array center
+                'lat': 40.817              # latitude of the array center
+                },
+            'mwa' : {
+                'chans': n.array(n.arange(128)),   # channels to read
+                'dmarr' : [0, 50.],      # dm values to use for dedispersion (only for some subclasses)
+                'pulsewidth' : 0.0,      # width of pulse in time (seconds)
                 'approxuvw' : True,      # flag to make template visibility file to speed up writing of dm track data
                 'pathout': './',         # place to put output files
-                'beam_params': [0]         # flag=0 or list of parameters for twodgaussian parameter definition
+                'beam_params': [0],      # flag=0 or list of parameters for twodgaussian parameter definition
+                'long': 116.671,         # longitude of the array center
+                'lat': -26.703           # latitude of the array center
                 }
             }
 
                     
-        self.pathout = self.params[profile]['pathout']
-        self.chans = self.params[profile]['chans']
-        self.dmarr = self.params[profile]['dmarr']
-        self.pulsewidth = self.params[profile]['pulsewidth'] * n.ones(len(self.chans))
-        self.approxuvw = self.params[profile]['approxuvw']
-        self.beam_params = self.params[profile]['beam_params']
+        self.pathout = self.params[self.profile]['pathout']
+        self.chans = self.params[self.profile]['chans']
+        self.dmarr = self.params[self.profile]['dmarr']
+        self.pulsewidth = self.params[self.profile]['pulsewidth'] * n.ones(len(self.chans))
+        self.approxuvw = self.params[self.profile]['approxuvw']
+        self.beam_params = self.params[self.profile]['beam_params']
+        self.long = self.params[self.profile]['long']
+        self.lat = self.params[self.profile]['lat']
 
     def set_params(self, **kargs):
         """ Method called by __init__ in subclasses. This allows one to change parameters.
@@ -128,6 +149,8 @@ class Reader:
         self.pulsewidth = self.params[self.profile]['pulsewidth'] * n.ones(len(self.chans))
         self.approxuvw = self.params[self.profile]['approxuvw']
         self.beam_params = self.params[self.profile]['beam_params']
+        self.long = self.params[self.profile]['long']
+        self.lat = self.params[self.profile]['lat']
 
     def show_params(self):
         """ Print parameters of pipeline that can be modified upon creation.
@@ -219,6 +242,120 @@ class Reader:
 #            p.show()
 
         return self.blarr,bllen
+
+    def simple_image(self, i=0, c=0, cell=1.0, imagesize=4096):
+        """
+        image a single integration and channel
+        cell size is in arcmin
+        returns image as an array
+        added by DLK 2013-04-05
+        """
+
+        # select integration and channel
+        track=n.rollaxis(self.data[i,:,c,:].reshape((self.nbl,1,1)),2)
+
+        # take mean over frequency => introduces delay beam        
+        truearr = n.ones( n.shape(track) )
+        falsearr = 1e-5*n.ones( n.shape(track) )   # need to set to small number so n.average doesn't go NaN
+        weightarr = n.where(track != 0j, truearr, falsearr)  # ignore zeros in mean across channels # bit of a hack                        
+        track = n.average(track, axis=2, weights=weightarr)
+
+        # assume only a single polarization
+        tr=track[0]
+        
+        # res and size in aipy units (lambda)
+        # size is pixel scale (cell size)
+        size=1/n.radians(cell/60.0)
+        # full field
+        res=size/imagesize
+        fov = n.degrees(1./res)*3600.  # field of view in arcseconds
+
+        # form channel dependent uvw
+        u_ch = n.outer(self.u[i], self.freq/self.freq_orig[0])
+        v_ch = n.outer(self.v[i], self.freq/self.freq_orig[0])
+        w_ch = n.outer(self.w[i], self.freq/self.freq_orig[0])
+        
+        # make image
+        ai = aipy.img.Img(size=size, res=res)
+        uvw_new, tr_new = ai.append_hermitian( (u_ch[:,c], v_ch[:,c], w_ch[:,c]), tr)
+        ai.put(uvw_new, tr_new)
+        image = ai.image(center = (size/res/2, size/res/2))
+
+        self.ai=ai
+        self.image_center=(size/res/2, size/res/2)
+        
+        return image
+
+    def image_cube(self, i=0, channels=None, cell=1.0, imagesize=4096):
+        """
+        Image a single integration across all channels.
+        Cell size is in arcmin. Channels can be an iterable object or None (which assumes all channels)
+        Returns images as 3d array (ra,dec,chan).
+        Added by DLK 2013-04-05
+        """
+
+        # select integration 
+        # assume only a single polarization
+        tr=self.data[i,:,:,0]
+        
+        # res and size in aipy units (lambda)
+        # size is pixel scale (cell size)
+        size=1/n.radians(cell/60.0)
+        # full field
+        res=size/imagesize
+        fov = n.degrees(1./res)*3600.  # field of view in arcseconds
+
+        if channels is None:
+            channels=range(self.nchan)
+
+        # form channel dependent uvw
+        u_ch = n.outer(self.u[i], self.freq/self.freq_orig[0])
+        v_ch = n.outer(self.v[i], self.freq/self.freq_orig[0])
+        w_ch = n.outer(self.w[i], self.freq/self.freq_orig[0])
+
+        # make image
+        image=n.zeros((len(channels),size/res,size/res))
+        for c,ic in zip(channels,xrange(len(channels))):
+            print 'Creating image for channel %d...' % c
+            ai = aipy.img.Img(size=size, res=res)
+            uvw_new, tr_new = ai.append_hermitian( (u_ch[:,c], v_ch[:,c], w_ch[:,c]), tr[:,c])
+            ai.put(uvw_new, tr_new)
+            image[ic] = ai.image(center = (size/res/2, size/res/2))
+
+        self.ai=ai
+        self.image_center=(size/res/2, size/res/2)
+        return image
+
+    def get_uv_kernel(self, width, length, angle):
+        """
+        Takes parameters of a elliptical Gaussian that represents model of spatial distribution of source.
+        Returns kernel in uv plane, that is, the evaluation of Fourier inverse of spatial model at uv sampling points.
+        Added by DLK 2013-04-09
+        """
+
+        center = self.image_center
+        sigmax=length/2.0
+        sigmay=width/2.0
+        # this is the correlation matrix in real space
+        # [[a,b],[b,c]]        
+        a=n.cos(angle)**2/2/sigmax**2+n.sin(angle)**2/2/sigmay**2
+        c=n.sin(angle)**2/2/sigmax**2+n.cos(angle)**2/2/sigmay**2
+        b=-n.sin(2*angle)/4/sigmax**2+n.sin(2*angle)/4/sigmay**2
+        # invert to get UV
+        det=a*c-b**2
+        ainv=c/det
+        binv=-b/det
+        cinv=a/det
+        if not isinstance(sigmax,n.ndarray):
+            kernel=n.exp(-(ainv*self.u**2+2*binv*self.u*self.v+cinv*self.v**2))
+        else:
+            # assume that there are as many elements as integrations
+            ainv=n.reshape(ainv,(len(ainv),1,1))
+            binv=n.reshape(binv,(len(ainv),1,1))
+            cinv=n.reshape(cinv,(len(ainv),1,1))
+            kernel=n.exp(-(ainv*self.u**2+2*binv*self.u*self.v+cinv*self.v**2))                        
+            
+        return kernel
 
     def imagetrack(self, trackdata, mode='split', i=0, pol='i', size=48000, res=500, clean=True, gain=0.01, tol=1e-4, newbeam=0, save=0, show=0):
         """ Use apiy to image trackdata returned by tracksub of dimensions (npol, nbl, nchan).
@@ -326,14 +463,102 @@ class Reader:
 
         return image_final
 
+    def get_shift(self, ra, dec):
+        """
+        Returns the shift (dl,dm) in radians required to move the phase center to the new ra,dec (in degrees).
+        Needs to know ra0, dec0 of phase center and lat, long of array.
+
+        Added by DLK 2013-04-04
+
+        First, get (ra0,dec0) and (ra,dec)
+        use these to compute (l,m) via:
+
+        l=cos(dec)*sin(ra-ra0)
+        m=sin(dec)*cos(dec0)-cos(dec)*sin(dec0)*cos(ra-ra0)
+        (Synthesis Imaging II, Eqn. 19-8 and 19-9)
+
+        Then need to warp the snapshot
+        l'=l + tan(Z)*sin(chi)*(sqrt(1-l**2-m**2)-1)
+        m'=m - tan(Z)*cos(chi)*(sqrt(1-l**2-m**2)-1)
+
+        (Cornwell et al. 2008, http://adsabs.harvard.edu/abs/2008ISTSP...2..647C,  arXiv:0807.4161v1
+        Eqn. 6, 7)
+        although the sign in Eqn. 6 might be wrong
+
+        Z=zenith angle and chi=parallactic angle, and so these terms are in fact the PV2_1 and PV2_2
+        that I calculate below.  However, this is also given in Synthesis Imaging II, Eqn. 19-21,19-22
+        in the same form, so maybe I have a sign wrong
+
+        This is also all discussed in Ord et al. (2010)
+        """
+
+        if not self.__dict__.has_key('wcs'):
+            # set up a fake WCS to do the transformation
+            # likely the details do not matter much
+            wcs=pywcs.WCS(naxis=2)
+            wcs.wcs.ctype=['RA---SIN','DEC--SIN']
+            wcs.wcs.crval=[n.degrees(self.ra0),n.degrees(self.dec0)]
+            wcs.wcs.crpix=[2049,2049]
+            wcs.wcs.cdelt=[-1.0/60,1.0/60]
+            
+            observer=ephem.Observer()
+            observer.long=n.radians(self.long)
+            observer.lat=n.radians(self.lat)
+            observer.epoch=ephem.J2000
+            J0 = ephem.julian_date(0)            
+            observer.date=self.time[0]-J0
+            
+            body=ephem.FixedBody()
+            body._ra=self.ra0
+            body._dec=self.dec0
+            body._epoch=ephem.J2000
+            body.compute(observer)
+            
+            LST=observer.sidereal_time()
+            HA=LST-self.ra0
+            _dec=self.dec0
+            _lat=n.radians(self.lat)
+            # this calculation comes from Steve Ord's fixhdr.c
+            parallactic_angle=n.arctan2(n.sin(HA)*n.cos(_lat),
+                                        n.sin(_lat)*n.cos(_dec)-n.sin(_dec)*n.cos(_lat)*n.cos(HA))
+
+            cosz=n.sin(_lat)*n.sin(_dec)+n.cos(_lat)*n.cos(_dec)*n.cos(HA)
+            z=n.arccos(cosz)
+            sinz=n.sin(z)
+            tanz=sinz/cosz
+            
+            PV2_1=tanz*n.sin(parallactic_angle)
+            PV2_2=tanz*n.cos(parallactic_angle)
+
+            wcs.wcs.set_pv([(2,1,PV2_1),(2,2,PV2_2)])
+            self.wcs=wcs
+            
+        if isinstance(ra,n.ndarray):
+            sky=n.vstack((ra,dec)).T
+        else:
+            sky=n.array([[ra,dec]])
+        pix=self.wcs.wcs_sky2pix(sky,0)
+        if isinstance(ra,n.ndarray):
+            x=pix[:,0]
+            y=pix[:,1]
+        else:
+            x=pix[0,0]
+            y=pix[0,1]
+        dx=x-(self.wcs.wcs.crpix[0]-1)
+        dy=y-(self.wcs.wcs.crpix[1]-1)
+        dl=n.radians(dx*self.wcs.wcs.cdelt[0])
+        dm=n.radians(dy*self.wcs.wcs.cdelt[1])
+        return dl,dm
+
     def phaseshift(self, dl=0, dm=0, im=[[0]], size=0):
         """ Function to apply phase shift (l,m) coordinates of data array, by (dl, dm).
         If dl,dm are arrays, will try to apply the given shift for each integration separately (courtesy DLK)
         If instead a 2d-array image, im, is given, phase center is shifted to image peak. Needs size to know image scale.
         Sets data and dataph arrays to new values.
+        Sum of all phase shifts for each integration is tracked in self.l0, self.m0.
         """
 
-        ang = lambda dl,dm,u,v,freq: (dl*n.outer(u,freq/freq_orig[0]) + dm*n.outer(v,freq/freq_orig[0]))  # operates on single time of u,v
+        ang = lambda dl,dm,u,v,freq: (dl*n.outer(u,freq/self.freq_orig[0]) + dm*n.outer(v,freq/self.freq_orig[0]))  # operates on single time of u,v
 
         if ((len(im) != 1) & (size != 0)):
             y,x = n.where(im == im.max())
@@ -347,17 +572,17 @@ class Reader:
             
         elif ((dl != 0) | (dm != 0)):
             print 'Shifting phase center by given (dl,dm) = (%e,%e) = (%e,%e) arcsec' % (dl, dm, n.degrees(dl)*3600, n.degrees(dm)*3600)
+            dl = dl * n.ones(self.nints)
+            dm = dm * n.ones(self.nints)
         else:
             raise ValueError('Need to give either dl or dm, or im and size.')
 
         for i in xrange(self.nints):
             for pol in xrange(self.npol):
-                if isinstance(dl,n.ndarray):
-                    self.data[i,:,:,pol] = self.data[i,:,:,pol] * n.exp(-2j*n.pi*ang(dl[i], dm[i],
-                                                                                     self.u[i], self.v[i], self.freq))
-                else:
-                    self.data[i,:,:,pol] = self.data[i,:,:,pol] * n.exp(-2j*n.pi*ang(dl, dm, self.u[i], self.v[i], self.freq))
+                self.data[i,:,:,pol] = self.data[i,:,:,pol] * n.exp(-2j*n.pi*ang(dl[i], dm[i], self.u[i], self.v[i], self.freq))
     
+        self.l0 = self.l0 + dl
+        self.m0 = self.m0 + dm
         self.dataph = (self.data.mean(axis=3).mean(axis=1)).real  # multi-pol
         self.min = self.dataph.min()
         self.max = self.dataph.max()
@@ -426,6 +651,10 @@ class MiriadReader(Reader):
                 self.sfreq0 = inp.getScalar ('sfreq', self.nspect0)
                 self.restfreq0 = inp.getScalar ('restfreq', self.nspect0)
                 self.pol0 = inp.getScalar ('pol')
+                # DLK 2013-04-04
+                # get the initial phase center
+                self.ra0=inp.getScalar('ra')
+                self.dec0=inp.getScalar('dec')
 
                 self.sfreq = self.sfreq0
                 self.sdf = self.sdf0
@@ -436,7 +665,6 @@ class MiriadReader(Reader):
 
             # build complete list of baselines
             bls.append(preamble[4])
-
             # end here. assume at least one instance of each bl occurs before ~six integrations (accommodates MWA)
             if len(bls) == 6*len(n.unique(bls)):
                 blarr = []
@@ -464,9 +692,11 @@ class MiriadReader(Reader):
         # define data arrays
         da = n.zeros((nints,self.nbl,self.nchan),dtype='complex64')
         fl = n.zeros((nints,self.nbl,self.nchan),dtype='bool')
-        u = n.zeros((nints,self.nbl),dtype='float64')
-        v = n.zeros((nints,self.nbl),dtype='float64')
-        w = n.zeros((nints,self.nbl),dtype='float64')
+        # DLK 2013-04-05
+        # add frequency dependence to UVW
+        u = n.zeros((nints,self.nbl,self.nchan),dtype='float64')
+        v = n.zeros((nints,self.nbl,self.nchan),dtype='float64')
+        w = n.zeros((nints,self.nbl,self.nchan),dtype='float64')
         pr = n.zeros((nints*self.nbl,5),dtype='float64')
 
         print
@@ -485,9 +715,10 @@ class MiriadReader(Reader):
                 fl[(i-nskip)//self.nbl,bldict[preamble[4]]] = flags
                 pr[i-nskip] = preamble
                 # uvw stored in preamble index 0,1,2 in units of ns
-                u[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[0] * self.freq_orig[0]
-                v[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[1] * self.freq_orig[0]
-                w[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[2] * self.freq_orig[0]
+                # Assumes miriad files store uvw in ns. Set to lambda by multiplying by freq of first channel.
+                u[(i-nskip)//self.nbl,bldict[preamble[4]],:] = preamble[0] * self.freq_orig[0]
+                v[(i-nskip)//self.nbl,bldict[preamble[4]],:] = preamble[1] * self.freq_orig[0]
+                w[(i-nskip)//self.nbl,bldict[preamble[4]],:] = preamble[2] * self.freq_orig[0]
             else:
                 break     # stop at nints
 
@@ -496,7 +727,6 @@ class MiriadReader(Reader):
 
             i = i+1
 
-        # Assumes miriad files store uvw in ns. Corrects by mean frequency of channels in use.
         self.u = u
         self.v = v
         self.w = w
@@ -507,8 +737,28 @@ class MiriadReader(Reader):
         self.preamble = pr
 
         time = self.preamble[::self.nbl,3]
+        # limit the data to actually real data (DLK)
+        maxgoodtime=max(n.where(time>0)[0])
+        if maxgoodtime+1 < nints:
+            print 'Requested to read %d integrations, but only found %d good integrations' % (nints,
+                                                                                              maxgoodtime)
+            # need to trim off some of the data
+            time=time[:maxgoodtime]
+            self.nints=len(time)
+            self.u=self.u[:maxgoodtime]
+            self.v=self.v[:maxgoodtime]
+            self.w=self.w[:maxgoodtime]
+            self.rawdata=self.rawdata[:maxgoodtime]
+            self.flags=self.flags[:maxgoodtime]
+        
         self.reltime = 24*3600*(time - time[0])      # relative time array in seconds. evla times change...?
+        # preserve absolute time (DLK)
+        self.time=time
         self.inttime = n.array([self.reltime[i+1] - self.reltime[i] for i in xrange(len(self.reltime)/5,len(self.reltime)-1)]).mean()
+
+        # define relative phase center for each integration
+        self.l0 = n.zeros(self.nints)
+        self.m0 = n.zeros(self.nints)
 
         # print summary info
         print
@@ -832,6 +1082,10 @@ class MSReader(Reader):
         ti = da['axis_info']['time_axis']['MJDseconds']
         self.reltime = ti - ti[0]
 
+        # define relative phase center for each integration
+        self.l0 = n.zeros(self.nints)
+        self.m0 = n.zeros(self.nints)
+
         self.rawdata = newda
         self.flags = flags
         print 'Shape of raw data, time:'
@@ -864,6 +1118,10 @@ class SimulationReader(Reader):
         self.inttime = inttime   # in seconds
         self.reltime = inttime*n.arange(nints)
 
+        # define relative phase center for each integration
+        self.l0 = n.zeros(self.nints)
+        self.m0 = n.zeros(self.nints)
+
         # antennas and baselines
         vla_d = 1e3*n.array([[ 0.00305045,  0.03486681],  [ 0.00893224,  0.10209601],  [ 0.01674565,  0.19140365],  [ 0.02615514,  0.29895461],  [ 0.03696303,  0.42248936],  [ 0.04903413,  0.56046269],  [ 0.06226816,  0.7117283 ],  [ 0.07658673,  0.87539034],  [ 0.09192633,  1.05072281],  [ 0.02867032, -0.02007518],  [ 0.08395162, -0.05878355],  [ 0.1573876 , -0.11020398],  [ 0.24582472, -0.17212832],  [ 0.347405  , -0.2432556 ],  [ 0.46085786, -0.32269615],  [ 0.58524071, -0.40978995],  [ 0.71981691, -0.50402122],  [ 0.86398948, -0.60497195],  [-0.03172077, -0.01479164],  [-0.09288386, -0.04331245],  [-0.17413325, -0.08119967],  [-0.27197986, -0.12682629],  [-0.38436803, -0.17923376],  [-0.509892  , -0.23776654],  [-0.64750886, -0.30193834],  [-0.79640364, -0.37136912],  [-0.95591581, -0.44575086]])
 
@@ -871,6 +1129,8 @@ class SimulationReader(Reader):
             antloc = vla_d
         elif array == 'vla10':
             antloc = vla_d[5:15]    # 5:15 choses inner part  of two arms
+        elif array == 'mwa':
+            antloc=1e3*n.array([[0,0]])
         self.nants = len(antloc)
         print 'Initializing nants:', self.nants
         blarr = []; u = []; v = []; w = []
@@ -898,7 +1158,7 @@ class SimulationReader(Reader):
 
         # simulate data
         self.rawdata = n.zeros((nints,self.nbl,self.nchan,self.npol),dtype='complex64')
-        self.flags = n.zeros((nints,self.nbl,self.nchan,self.npol),dtype='bool')
+        self.flags = n.ones((nints,self.nbl,self.nchan,self.npol),dtype='bool')
         self.rawdata.real = n.sqrt(self.nchan) * n.random.randn(nints,self.nbl,self.nchan,self.npol)   # normal width=1 after channel mean
         self.rawdata.imag = n.sqrt(self.nchan) * n.random.randn(nints,self.nbl,self.nchan,self.npol)
 
@@ -912,7 +1172,7 @@ class SimulationReader(Reader):
         dl, dm are relative direction cosines (location) of transient, s is brightness, and i is integration.
         """
 
-        ang = lambda dl,dm,u,v,freq: (dl*n.outer(u,freq/freq_orig[0]) + dm*n.outer(v,freq/freq_orig[0]))  # operates on single time of u,v
+        ang = lambda dl,dm,u,v,freq: (dl*n.outer(u,freq/self.freq_orig[0]) + dm*n.outer(v,freq/self.freq_orig[0]))  # operates on single time of u,v
         for pol in range(self.npol):
             self.data[i,:,:,pol] = self.data[i,:,:,pol] + s * n.exp(-2j*n.pi*ang(dl, dm, self.u[i], self.v[i], self.freq))
 
@@ -1176,6 +1436,7 @@ for i in range(0, len(n_a)-2):
                 p.savefig(self.pathout+savename)
 
         return basnr[cands], bastd[cands], cands
+
 
     def specmod(self, tbin, bgwindow=4):
         """Calculate spectral modulation for given track.
@@ -1622,7 +1883,6 @@ class ProcessByDispersion2():
         """ Sets up tracks used to speed up dedispersion code.
         Has the option to delete raw data and flags to save memory.
         """
-
         print
         print 'Filtering rawdata to data as masked array...'
 # using 0 as flag
@@ -1654,8 +1914,10 @@ class ProcessByDispersion2():
 #            self.twidths[dmbin] = [len(n.where(trackc == (chan-self.chans[0]))[0]) for chan in self.chans]    # width of track for each unflagged channel
 #            self.delay[dmbin] = [n.int(trackt[n.where(trackc == (chan-self.chans[0]))[0][0]]) for chan in self.chans]  # integration delay for each unflagged channel of a given dm.
 # new way
+
             self.twidths[dmbin] = [len(n.where(n.array(trackc) == chan)[0]) for chan in range(len(self.chans))]    # width of track for each unflagged channel
             self.delay[dmbin] = [n.int(trackt[n.where(n.array(trackc) == chan)[0][0]]) for chan in range(len(self.chans))]  # integration delay for each unflagged channel of a given dm.
+
 
         print 'Track width in time: '
         for dmbin in self.twidths:
@@ -2220,10 +2482,10 @@ class pipe_simdisp2(SimulationReader, ProcessByDispersion2):
     Can also set some parameters as key=value pairs.
     """
 
-    def __init__(self, profile='default', nints=256, inttime=0.001, chans=n.arange(64), freq=1.4, bw=0.128, array='vla10', **kargs):
+    def __init__(self, profile='default', nints=256, inttime=0.001, freq=1.4, bw=0.128, array='vla10', **kargs):
         self.set_profile(profile=profile)
         self.set_params(**kargs)
-        self.simulate(nints, inttime, chans, freq, bw, array)
+        self.simulate(nints, inttime, self.chans, freq, bw, array)
         self.prep()
 
 
