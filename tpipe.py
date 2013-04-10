@@ -14,7 +14,6 @@ from os.path import join
 import pickle
 import numpy as n
 import pylab as p
-#import ephem,pywcs
 
 # set up libraries for reading and imaging visibility data
 try:
@@ -45,6 +44,12 @@ try:
     print 'Imported aipy...'
 except ImportError:
     print 'No aipy available. Can\'t image in Python.'
+
+try:
+    import ephem,pywcs
+    print 'Imported ephem and pywcs...'
+except ImportError:
+    print 'Either ephem or pywcs not available. Can only do flat-sky coord transforms (no ra/dec info).'
 
 
 class Reader:
