@@ -56,10 +56,10 @@ class Reader:
     def __init__(self):
         raise NotImplementedError('Cannot instantiate class directly. Use \'pipe\' subclasses.')
 
-    def set_params(self, profile='default', **kargs):
+    def set_profile(self, profile='default'):
         """ Method called by __init__ in subclasses. This sets all parameters needed elsewhere.
         Can optionally use a profile which is a set of params.
-        Also can set key directly as keyword=value pair.
+        Changing parameters done with set_params
         """
 
         # parameters used by various subclasses
@@ -101,13 +101,6 @@ class Reader:
                 }
             }
 
-        # may further modify parameters manually
-        if len(kargs) > 0:
-            for key in kargs:
-                if key in self.params[profile].keys():
-                    self.params[profile][key] = kargs[key]
-                else:
-                    print '%s not a standard key. Will not be used.' % (key)
                     
         self.pathout = self.params[profile]['pathout']
         self.chans = self.params[profile]['chans']
@@ -115,6 +108,26 @@ class Reader:
         self.pulsewidth = self.params[profile]['pulsewidth'] * n.ones(len(self.chans))
         self.approxuvw = self.params[profile]['approxuvw']
         self.beam_params = self.params[profile]['beam_params']
+
+    def set_params(self, **kargs):
+        """ Method called by __init__ in subclasses. This allows one to change parameters.
+        Assumes set_profile already run on pipe.
+        """
+
+        # may further modify parameters manually
+        if len(kargs) > 0:
+            for key in kargs:
+                if key in self.params[self.profile].keys():
+                    self.params[self.profile][key] = kargs[key]
+                else:
+                    print '%s not a standard key. Will not be used.' % (key)
+                    
+        self.pathout = self.params[self.profile]['pathout']
+        self.chans = self.params[self.profile]['chans']
+        self.dmarr = self.params[self.profile]['dmarr']
+        self.pulsewidth = self.params[self.profile]['pulsewidth'] * n.ones(len(self.chans))
+        self.approxuvw = self.params[self.profile]['approxuvw']
+        self.beam_params = self.params[self.profile]['beam_params']
 
     def show_params(self):
         """ Print parameters of pipeline that can be modified upon creation.
@@ -169,7 +182,7 @@ class Reader:
                 savename = self.file.split('.')[:-1]
                 savename.append(str(self.scan) + '_' + str(self.nskip/self.nbl) + '_spec.png')
                 savename = string.join(savename,'.')
-            elif type(save) == type('hi'):
+            elif isinstance(save, types.StringType):
                 savename = save
             print 'Saving file as ', savename
             p.savefig(self.pathout+savename)
@@ -207,8 +220,9 @@ class Reader:
 
         return self.blarr,bllen
 
-    def imagetrack(self, trackdata, i=0, pol='i', size=48000, res=500, clean=True, gain=0.01, tol=1e-4, newbeam=0, save=0, show=0):
+    def imagetrack(self, trackdata, mode='split', i=0, pol='i', size=48000, res=500, clean=True, gain=0.01, tol=1e-4, newbeam=0, save=0, show=0):
         """ Use apiy to image trackdata returned by tracksub of dimensions (npol, nbl, nchan).
+        mode defines how frequency dependence is handled. 'split' means separate uv and data points in frequency (but not mfs). 'mean' means mean vis across frequency.
         int is used to select uvw coordinates for track. default is first int.
         pol can be 'i' for a Stokes I image (mean over pol dimension) or a pol index.
         default params size and res are good for 1.4 GHz VLA, C-config image.
@@ -217,29 +231,42 @@ class Reader:
         save=0 is no saving, save=1 is save with default name, save=<string>.png uses custom name (must include .png). 
         """
 
-        # take mean over frequency => introduces delay beam
-        truearr = n.ones( n.shape(trackdata) )
-        falsearr = 1e-5*n.ones( n.shape(trackdata) )   # need to set to small number so n.average doesn't go NaN
-        weightarr = n.where(trackdata != 0j, truearr, falsearr)  # ignore zeros in mean across channels # bit of a hack                        
-        trackdata = n.average(trackdata, axis=2, weights=weightarr)
-#        trackdata = trackdata.mean(axis=2)  # alternately can include zeros
-        
+        # reduce pol axis
         if ((pol == 'i') | (pol == 'I')):
             if len(trackdata) == 2:
                 print 'Making Stokes I image as mean of two pols...'
             else:
                 print 'Making Stokes I image as mean over all pols. Hope that\'s ok...'
             td = trackdata.mean(axis=0)
-        elif type(pol) == type(0):
+        elif isinstance(pol, types.IntType):
             print 'Making image of pol %d' % (pol)
             td = trackdata[pol]
+
+        # apply w phase rotation. generally this is done externally (e.g., by data writing software) and is not needed here.
+#        wrot = lambda w: n.exp(-2j*n.pi*n.outer(w, self.freq/self.freq_orig[0]))
+#        td = td*wrot(self.w[i])
+
+        # define handling of freq axis
+        if mode == 'split':
+            td = td.flatten()
+            uu = n.outer(self.u[i], self.freq/self.freq_orig[0]).flatten()
+            vv = n.outer(self.v[i], self.freq/self.freq_orig[0]).flatten()
+            ww = n.outer(self.w[i], self.freq/self.freq_orig[0]).flatten()
+        elif mode == 'mean':
+            td = td.mean(axis=1)
+            uu = self.u[i]
+            vv = self.v[i]
+            ww = self.w[i]
+        else:
+            print 'Mode must be \'mean\' or \'split\'.'
+            return 0
 
         fov = n.degrees(1./res)*3600.  # field of view in arcseconds
         p.clf()
 
         # make image
         ai = aipy.img.Img(size=size, res=res)
-        uvw_new, td_new = ai.append_hermitian( (self.u[i],self.v[i],self.w[i]), td)
+        uvw_new, td_new = ai.append_hermitian( (uu, vv, ww), td)
         ai.put(uvw_new, td_new)
         image = ai.image(center = (size/res/2, size/res/2))
         image_final = image
@@ -292,7 +319,7 @@ class Reader:
                     savename = self.file.split('.')[:-1]
                     savename.append(str(self.nskip/self.nbl) + '_im.png')
                     savename = string.join(savename,'.')
-                elif type(save) == type('hi'):
+                elif isinstance(save, string):
                     savename = save
                 print 'Saving file as ', savename
                 p.savefig(self.pathout+savename)
@@ -306,7 +333,7 @@ class Reader:
         Sets data and dataph arrays to new values.
         """
 
-        ang = lambda dl,dm,u,v,freq: (dl*n.outer(u,freq/freq.mean()) + dm*n.outer(v,freq/freq.mean()))  # operates on single time of u,v
+        ang = lambda dl,dm,u,v,freq: (dl*n.outer(u,freq/freq_orig[0]) + dm*n.outer(v,freq/freq_orig[0]))  # operates on single time of u,v
 
         if ((len(im) != 1) & (size != 0)):
             y,x = n.where(im == im.max())
@@ -458,9 +485,9 @@ class MiriadReader(Reader):
                 fl[(i-nskip)//self.nbl,bldict[preamble[4]]] = flags
                 pr[i-nskip] = preamble
                 # uvw stored in preamble index 0,1,2 in units of ns
-                u[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[0] * self.freq.mean()
-                v[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[1] * self.freq.mean()
-                w[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[2] * self.freq.mean()
+                u[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[0] * self.freq_orig[0]
+                v[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[1] * self.freq_orig[0]
+                w[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[2] * self.freq_orig[0]
             else:
                 break     # stop at nints
 
@@ -797,9 +824,9 @@ class MSReader(Reader):
         self.pol0 = -1 # assumes single pol?
 
         # Assumes MS files store uvw in meters. Corrects by mean frequency of channels in use.
-        self.u = u.transpose() * self.freq.mean() * (1e9/3e8)
-        self.v = v.transpose() * self.freq.mean() * (1e9/3e8)
-        self.w = w.transpose() * self.freq.mean() * (1e9/3e8)
+        self.u = u.transpose() * self.freq_orig[0] * (1e9/3e8)
+        self.v = v.transpose() * self.freq_orig[0] * (1e9/3e8)
+        self.w = w.transpose() * self.freq_orig[0] * (1e9/3e8)
 
         # set integration time and time axis
         ti = da['axis_info']['time_axis']['MJDseconds']
@@ -865,9 +892,9 @@ class SimulationReader(Reader):
 
         # no earth rotation yet
         for i in range(nints):
-            self.u[i] = n.array(u) * self.freq.mean() * (1e9/3e8)
-            self.v[i] = n.array(v) * self.freq.mean() * (1e9/3e8)
-            self.w[i] = n.array(w) * self.freq.mean() * (1e9/3e8)
+            self.u[i] = n.array(u) * self.freq_orig[0] * (1e9/3e8)
+            self.v[i] = n.array(v) * self.freq_orig[0] * (1e9/3e8)
+            self.w[i] = n.array(w) * self.freq_orig[0] * (1e9/3e8)
 
         # simulate data
         self.rawdata = n.zeros((nints,self.nbl,self.nchan,self.npol),dtype='complex64')
@@ -885,7 +912,7 @@ class SimulationReader(Reader):
         dl, dm are relative direction cosines (location) of transient, s is brightness, and i is integration.
         """
 
-        ang = lambda dl,dm,u,v,freq: (dl*n.outer(u,freq/freq.mean()) + dm*n.outer(v,freq/freq.mean()))  # operates on single time of u,v
+        ang = lambda dl,dm,u,v,freq: (dl*n.outer(u,freq/freq_orig[0]) + dm*n.outer(v,freq/freq_orig[0]))  # operates on single time of u,v
         for pol in range(self.npol):
             self.data[i,:,:,pol] = self.data[i,:,:,pol] + s * n.exp(-2j*n.pi*ang(dl, dm, self.u[i], self.v[i], self.freq))
 
@@ -1143,7 +1170,7 @@ for i in range(0, len(n_a)-2):
                     savename = self.file.split('.')[:-1]
                     savename.append(str(self.nskip/self.nbl) + '_bisp.png')
                     savename = string.join(savename,'.')
-                elif type(save) == type('hi'):
+                elif isinstance(save, string):
                     savename = save
                 print 'Saving file as ', savename
                 p.savefig(self.pathout+savename)
@@ -1459,7 +1486,7 @@ for i in range(0, len(n_a)-2):
                         savename = self.file.split('.')[:-1]
                         savename.append(str(self.nskip/self.nbl) + '_' + str(dmbin) + '_bisp.png')
                         savename = string.join(savename,'.')
-                    elif type(save) == type('hi'):
+                    elif isinstance(save, string):
                         savename = save
                     print 'Saving file as ', savename
                     p.savefig(self.pathout+savename)
@@ -1571,7 +1598,7 @@ for i in range(0, len(n_a)-2):
                     savename = self.file.split('.')[:-1]
                     savename.append(str(self.scan) + '_' + str(self.nskip/self.nbl) + '_disp.png')
                     savename = string.join(savename,'.')
-                elif type(save) == type('hi'):
+                elif isinstance(save, types.StringType):
                     savename = save
                 print 'Saving file as ', savename
                 p.savefig(self.pathout+savename)
@@ -1675,7 +1702,7 @@ class ProcessByDispersion2():
 
         print 'Applying fft time filter. Assumes no missing data in time.'
 
-        if type(width) != types.ListType:
+        if not isinstance(width, types.ListType):
             width = [width] * len(self.chans)
 
         # time filter by convolution. functions have different normlizations. m has central peak integral=1 and total is 0. others integrate to 1, so they don't do bg subtraction.
@@ -1849,7 +1876,7 @@ class ProcessByDispersion2():
         print 'Bispectrum made for stokes =', stokes
         if ( (stokes == 'postbisp') | (stokes == 'prebisp') | (stokes == 'noavg') ):      # case of combining two stokes
             bispectra = n.zeros((len(self.dmarr), len(self.data), len(self.triples)), dtype='complex')
-        elif (type(stokes) == types.IntType):          # case of using single pol
+        elif isinstance(stokes, types.IntType):          # case of using single pol
             if stokes >= self.npol:
                 raise IndexError, 'Stokes parameter larger than number of pols in data.'
             bispectra = n.zeros((len(self.dmarr), len(self.data), len(self.triples)), dtype='complex')
@@ -1871,7 +1898,7 @@ class ProcessByDispersion2():
                 bispectra[dmbin] = bisp(dddata[:, self.triples]).mean(axis=2)
             elif stokes == 'noavg':
                 bispectra[dmbin] = bisp(dddata[:, self.triples])
-            elif type(stokes) == type(0):
+            elif isinstance(stokes, types.IntType):          # case of using single pol
                 bispectra[dmbin] = bisp(dddata[:, self.triples, stokes])
 
             print 'dedispersed for ', self.dmarr[dmbin]
@@ -1973,7 +2000,7 @@ class ProcessByDispersion2():
                         savename = self.file.split('.')[:-1]
                         savename.append(str(self.nskip/self.nbl) + '_' + str(dmbin) + '_bisp.png')
                         savename = string.join(savename,'.')
-                    elif type(save) == type('hi'):
+                    elif isinstance(save, types.StringType):
                         savename = save
                     print 'Saving file as ', savename
                     p.savefig(self.pathout+savename)
@@ -2073,7 +2100,7 @@ class ProcessByDispersion2():
                     savename = self.file.split('.')[:-1]
                     savename.append(str(self.scan) + '_' + str(self.nskip/self.nbl) + '_disp.png')
                     savename = string.join(savename,'.')
-                elif type(save) == type('hi'):
+                elif isinstance(save, types.StringType):
                     savename = save
                 print 'Saving file as ', savename
                 p.savefig(self.pathout+savename)
@@ -2093,7 +2120,8 @@ class pipe_msint(MSReader, ProcessByIntegration):
     """
 
     def __init__(self, file, profile='default', nints=1024, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
-        self.set_params(profile=profile, **kargs)
+        self.set_profile(profile=profile)
+        self.set_params(**kargs)
         self.read(file=file, nints=nints, nskip=nskip, spw=spw, selectpol=selectpol, scan=scan, datacol=datacol)
         self.prep()
 
@@ -2111,7 +2139,8 @@ class pipe_msdisp(MSReader, ProcessByDispersion):
     """
 
     def __init__(self, file, profile='default', nints=1024, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
-        self.set_params(profile=profile, **kargs)
+        self.set_profile(profile=profile)
+        self.set_params(**kargs)
         self.read(file=file, nints=nints, nskip=nskip, spw=spw, selectpol=selectpol, scan=scan, datacol=datacol)
         self.prep()
 
@@ -2130,7 +2159,8 @@ class pipe_msdisp2(MSReader, ProcessByDispersion2):
     """
 
     def __init__(self, file, profile='default', nints=1024, nskip=0, spw=[-1], selectpol=['RR','LL'], scan=0, datacol='data', **kargs):
-        self.set_params(profile=profile, **kargs)
+        self.set_profile(profile=profile)
+        self.set_params(**kargs)
         self.read(file=file, nints=nints, nskip=nskip, spw=spw, selectpol=selectpol, scan=scan, datacol=datacol)
         self.prep()
 
@@ -2144,7 +2174,8 @@ class pipe_mirint(MiriadReader, ProcessByIntegration):
     """
 
     def __init__(self, file, profile='default', nints=1024, nskip=0, nocal=False, nopass=False, **kargs):
-        self.set_params(profile=profile, **kargs)
+        self.set_profile(profile=profile)
+        self.set_params(**kargs)
         self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
         self.prep()
 
@@ -2158,7 +2189,8 @@ class pipe_mirdisp(MiriadReader, ProcessByDispersion):
     """
 
     def __init__(self, file, profile='default', nints=1024, nskip=0, nocal=False, nopass=False, **kargs):
-        self.set_params(profile=profile, **kargs)
+        self.set_profile(profile=profile)
+        self.set_params(**kargs)
         self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
         self.prep()
 
@@ -2173,7 +2205,8 @@ class pipe_mirdisp2(MiriadReader, ProcessByDispersion2):
     """
 
     def __init__(self, file, profile='default', nints=1024, nskip=0, nocal=False, nopass=False, **kargs):
-        self.set_params(profile=profile, **kargs)
+        self.set_profile(profile=profile)
+        self.set_params(**kargs)
         self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
         self.prep()
 
@@ -2188,7 +2221,8 @@ class pipe_simdisp2(SimulationReader, ProcessByDispersion2):
     """
 
     def __init__(self, profile='default', nints=256, inttime=0.001, chans=n.arange(64), freq=1.4, bw=0.128, array='vla10', **kargs):
-        self.set_params(profile=profile, chans=chans, **kargs)
+        self.set_profile(profile=profile)
+        self.set_params(**kargs)
         self.simulate(nints, inttime, chans, freq, bw, array)
         self.prep()
 
