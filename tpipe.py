@@ -331,37 +331,6 @@ class Reader:
         self.image_center=(size/res/2, size/res/2)
         return image
 
-    def get_uv_kernel(self, width, length, angle):
-        """
-        Takes parameters of a elliptical Gaussian that represents model of spatial distribution of source.
-        Returns kernel in uv plane, that is, the evaluation of Fourier inverse of spatial model at uv sampling points.
-        Added by DLK 2013-04-09
-        """
-
-        center = self.image_center
-        sigmax=length/2.0
-        sigmay=width/2.0
-        # this is the correlation matrix in real space
-        # [[a,b],[b,c]]        
-        a=n.cos(angle)**2/2/sigmax**2+n.sin(angle)**2/2/sigmay**2
-        c=n.sin(angle)**2/2/sigmax**2+n.cos(angle)**2/2/sigmay**2
-        b=-n.sin(2*angle)/4/sigmax**2+n.sin(2*angle)/4/sigmay**2
-        # invert to get UV
-        det=a*c-b**2
-        ainv=c/det
-        binv=-b/det
-        cinv=a/det
-        if not isinstance(sigmax,n.ndarray):
-            kernel=n.exp(-(ainv*self.u**2+2*binv*self.u*self.v+cinv*self.v**2))
-        else:
-            # assume that there are as many elements as integrations
-            ainv=n.reshape(ainv,(len(ainv),1,1))
-            binv=n.reshape(binv,(len(ainv),1,1))
-            cinv=n.reshape(cinv,(len(ainv),1,1))
-            kernel=n.exp(-(ainv*self.u**2+2*binv*self.u*self.v+cinv*self.v**2))                        
-            
-        return kernel
-
     def imagetrack(self, trackdata, mode='split', i=0, pol='i', size=48000, res=500, clean=True, gain=0.01, tol=1e-4, newbeam=0, save=0, show=0):
         """ Use apiy to image trackdata returned by tracksub of dimensions (npol, nbl, nchan).
         mode defines how frequency dependence is handled. 'split' means separate uv and data points in frequency (but not mfs). 'mean' means mean vis across frequency.
@@ -1913,6 +1882,10 @@ class ProcessByDispersion2():
         for dmbin in xrange(len(self.dmarr)):
             self.dmtrack0[dmbin] = self.dmtrack(self.dmarr[dmbin],0)  # track crosses high-freq channel in first integration
             (trackt, trackc) = self.dmtrack0[dmbin]
+            if len(trackc)<len(self.chans):
+                print 'Computed track for DM=%.1f is too long for the observation; only %d channels are computed' % (self.dmarr[dmbin],len(trackc))
+                continue
+                    
 # old way
 #            self.twidths[dmbin] = [len(n.where(trackc == (chan-self.chans[0]))[0]) for chan in self.chans]    # width of track for each unflagged channel
 #            self.delay[dmbin] = [n.int(trackt[n.where(trackc == (chan-self.chans[0]))[0][0]]) for chan in self.chans]  # integration delay for each unflagged channel of a given dm.
