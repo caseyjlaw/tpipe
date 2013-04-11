@@ -31,7 +31,7 @@ except ImportError:
 
 try:
     # miriad-python can be used to read miriad format data
-    from mirtask import util
+    import mirtask
     from mirexec import TaskInvert, TaskClean, TaskRestore, TaskImFit, TaskCgDisp, TaskImStat, TaskUVFit
     import miriad
     print 'Imported miriad-python'
@@ -265,8 +265,16 @@ class Reader:
         weightarr = n.where(track != 0j, truearr, falsearr)  # ignore zeros in mean across channels # bit of a hack                        
         track = n.average(track, axis=2, weights=weightarr)
 
-        # assume only a single polarization
-        tr=track[0]
+        # select integration and reduce pol axis
+        if ((pol == 'i') | (pol == 'I')):
+            if len(trackdata) == 2:
+                print 'Making Stokes I image as mean of two pols...'
+            else:
+                print 'Making Stokes I image as mean over all pols. Hope that\'s ok...'
+            tr=track.mean(axis=0)
+        elif isinstance(pol, types.IntType):
+            print 'Making image of pol %d' % (pol)
+            tr=track[pol]
         
         # res and size in aipy units (lambda)
         # size is pixel scale (cell size)
@@ -291,7 +299,7 @@ class Reader:
         
         return image
 
-    def image_cube(self, i=0, channels=None, cell=1.0, imagesize=4096):
+    def image_cube(self, i=0, channels=None, cell=1.0, imagesize=4096, pol='i'):
         """
         Image a single integration across all channels.
         Cell size is in arcmin. Channels can be an iterable object or None (which assumes all channels)
@@ -299,9 +307,16 @@ class Reader:
         Added by DLK 2013-04-05
         """
 
-        # select integration 
-        # assume only a single polarization
-        tr=self.data[i,:,:,0]
+        # select integration and reduce pol axis
+        if ((pol == 'i') | (pol == 'I')):
+            if len(trackdata) == 2:
+                print 'Making Stokes I image as mean of two pols...'
+            else:
+                print 'Making Stokes I image as mean over all pols. Hope that\'s ok...'
+            tr=self.data.mean(axis=3)[0]
+        elif isinstance(pol, types.IntType):
+            print 'Making image of pol %d' % (pol)
+            tr=self.data[0,:,:,pol]
         
         # res and size in aipy units (lambda)
         # size is pixel scale (cell size)
@@ -601,7 +616,7 @@ class MiriadReader(Reader):
     def __init__(self):
         raise NotImplementedError('Cannot instantiate class directly. Use \'pipe\' subclasses.')
 
-    def read(self, file, nints, nskip, nocal, nopass):
+    def read(self, file, nints, nskip, nocal, nopass, selectpol):
         """ Reads in Miriad data using miriad-python.
         """
 
@@ -632,7 +647,6 @@ class MiriadReader(Reader):
 
                 self.sfreq = self.sfreq0
                 self.sdf = self.sdf0
-                self.npol = 1
                 self.nchan = len(data)
                 print 'Initializing nchan:', self.nchan
                 bls = []
@@ -643,12 +657,33 @@ class MiriadReader(Reader):
             if len(bls) == 6*len(n.unique(bls)):
                 blarr = []
                 for bl in n.unique(bls):
-                    blarr.append(util.decodeBaseline (bl))
+                    blarr.append(mirtask.util.decodeBaseline (bl))
                 self.blarr = n.array(blarr)
                 bldict = dict( zip(n.unique(bls), n.arange(len(blarr))) )
                 break
 
             i = i+1
+
+        # find number of pols in data
+        uvd = mirtask.UVDataSet(self.file, 'rw')
+        self.npol_orig = uvd.getNPol()
+        pols = []
+        for i in xrange(20):          # loop over the first few spectra to find all polarizations in the data
+            pols.append(uvd.getPol())
+            uvd.next()
+        uvd.close()
+        upols = n.unique(pols)                # get unique pols in first few spectra
+        polstr = mirtask.util.polarizationName(upols[0])
+        if len(upols) > 1:
+            for pol in upols[1:]:
+                polstr = polstr + ', ' + mirtask.util.polarizationName(pol)
+        self.npol = len(selectpol)
+        if self.npol > self.npol_orig:
+            raise ValueError('Trying to select %d pols from %d available.' % (self.npol, self.npol_orig))
+        for pol in selectpol:
+            if not pol in polstr:
+                raise ValueError('Trying to select %s, but %s available.' % (pol, polstr))
+        print 'Initializing npol: %d (of %d, %s)' % (self.npol, self.npol_orig, polstr)
 
         # Initialize more stuff...
         self.freq_orig = self.sfreq + self.sdf * n.arange(self.nchan)
@@ -664,51 +699,47 @@ class MiriadReader(Reader):
         nskip = int(self.nskip)
 
         # define data arrays
-        da = n.zeros((nints,self.nbl,self.nchan),dtype='complex64')
-        fl = n.zeros((nints,self.nbl,self.nchan),dtype='bool')
-        u = n.zeros((nints,self.nbl),dtype='float64')
-        v = n.zeros((nints,self.nbl),dtype='float64')
-        w = n.zeros((nints,self.nbl),dtype='float64')
-        pr = n.zeros((nints*self.nbl,5),dtype='float64')
+        self.rawdata = n.zeros((nints, self.nbl, self.nchan, self.npol),dtype='complex64')
+        self.flags = n.zeros((nints, self.nbl, self.nchan, self.npol),dtype='bool')
+        self.u = n.zeros((nints,self.nbl),dtype='float64')
+        self.v = n.zeros((nints,self.nbl),dtype='float64')
+        self.w = n.zeros((nints,self.nbl),dtype='float64')
+        self.preamble = n.zeros((nints*self.nbl,5),dtype='float64')
 
-        print
         # go back and read data into arrays
-        i = 0
-        for inp, preamble, data, flags in vis.readLowlevel ('dsl3', False, nocal=nocal, nopass=nopass):
-            # Loop to skip some data and read shifted data into original data arrays
+        for polnum in range(self.npol):
+            stokes = selectpol[polnum]
+            i = 0
+            for inp, preamble, data, flags in vis.readLowlevel ('dsl3', False, nocal=nocal, nopass=nopass, stokes=stokes):
+                # Loop to skip some data and read shifted data into original data arrays
 
-            if i < nskip:
+                if i < nskip:
+                    i = i+1
+                    continue 
+
+                # assumes ints in order, but may skip. after nbl iterations, it fills next row, regardless of number filled.
+                if (i-nskip) < nints*self.nbl:
+                    self.preamble[i-nskip] = preamble
+                    self.rawdata[(i-nskip)//self.nbl, bldict[preamble[4]], :, polnum] = data
+                    self.flags[(i-nskip)//self.nbl, bldict[preamble[4]], :, polnum] = flags
+                    # uvw stored in preamble index 0,1,2 in units of ns
+                    # Assumes miriad files store uvw in ns. Set to lambda by multiplying by freq of first channel.
+                    self.u[(i-nskip)//self.nbl, bldict[preamble[4]]] = preamble[0] * self.freq_orig[0]
+                    self.v[(i-nskip)//self.nbl, bldict[preamble[4]]] = preamble[1] * self.freq_orig[0]
+                    self.w[(i-nskip)//self.nbl, bldict[preamble[4]]] = preamble[2] * self.freq_orig[0]
+                else:
+                    break     # stop at nints
+
+                if not (i % (self.nbl*100)):
+                    print 'Read spectrum ', str(i)
+
                 i = i+1
-                continue 
-
-            # assumes ints in order, but may skip. after nbl iterations, it fills next row, regardless of number filled.
-            if (i-nskip) < nints*self.nbl:
-                da[(i-nskip)//self.nbl,bldict[preamble[4]]] = data
-                fl[(i-nskip)//self.nbl,bldict[preamble[4]]] = flags
-                pr[i-nskip] = preamble
-                # uvw stored in preamble index 0,1,2 in units of ns
-                # Assumes miriad files store uvw in ns. Set to lambda by multiplying by freq of first channel.
-                u[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[0] * self.freq_orig[0]
-                v[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[1] * self.freq_orig[0]
-                w[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[2] * self.freq_orig[0]
-            else:
-                break     # stop at nints
-
-            if not (i % (self.nbl*100)):
-                print 'Read spectrum ', str(i)
-
-            i = i+1
-
-        self.u = u
-        self.v = v
-        self.w = w
-
-        # build final data structures
-        self.rawdata = n.expand_dims(da, 3)  # hack to get superfluous pol axis
-        self.flags = n.expand_dims(fl, 3)
-        self.preamble = pr
 
         time = self.preamble[::self.nbl,3]
+
+        if ((not n.any(self.rawdata)) & (not n.any(time))):
+            raise ValueError('rawdata and time arrays at default values. No data read?')
+
         # limit the data to actually real data (DLK)
         maxgoodtime=max(n.where(time>0)[0])
         if maxgoodtime+1 < nints:
@@ -2411,10 +2442,10 @@ class pipe_mirint(MiriadReader, ProcessByIntegration):
     Can also set some parameters as key=value pairs.
     """
 
-    def __init__(self, file, profile='default', nints=1024, nskip=0, nocal=False, nopass=False, **kargs):
+    def __init__(self, file, profile='default', nints=1024, nskip=0, nocal=False, nopass=False, selectpol=['XX'], **kargs):
         self.set_profile(profile=profile)
         self.set_params(**kargs)
-        self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
+        self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass, selectpol=selectpol)
         self.prep()
 
 
@@ -2426,10 +2457,10 @@ class pipe_mirdisp(MiriadReader, ProcessByDispersion):
     Can also set some parameters as key=value pairs.
     """
 
-    def __init__(self, file, profile='default', nints=1024, nskip=0, nocal=False, nopass=False, **kargs):
+    def __init__(self, file, profile='default', nints=1024, nskip=0, nocal=False, nopass=False, selectpol=['XX'], **kargs):
         self.set_profile(profile=profile)
         self.set_params(**kargs)
-        self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
+        self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass, selectpol=selectpol)
         self.prep()
 
 
@@ -2442,10 +2473,10 @@ class pipe_mirdisp2(MiriadReader, ProcessByDispersion2):
     Can also set some parameters as key=value pairs.
     """
 
-    def __init__(self, file, profile='default', nints=1024, nskip=0, nocal=False, nopass=False, **kargs):
+    def __init__(self, file, profile='default', nints=1024, nskip=0, nocal=False, nopass=False, selectpol=['XX'], **kargs):
         self.set_profile(profile=profile)
         self.set_params(**kargs)
-        self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass)
+        self.read(file=file, nints=nints, nskip=nskip, nocal=nocal, nopass=nopass, selectpol=selectpol)
         self.prep()
 
 
