@@ -697,11 +697,9 @@ class MiriadReader(Reader):
         # define data arrays
         da = n.zeros((nints,self.nbl,self.nchan),dtype='complex64')
         fl = n.zeros((nints,self.nbl,self.nchan),dtype='bool')
-        # DLK 2013-04-05
-        # add frequency dependence to UVW
-        u = n.zeros((nints,self.nbl,self.nchan),dtype='float64')
-        v = n.zeros((nints,self.nbl,self.nchan),dtype='float64')
-        w = n.zeros((nints,self.nbl,self.nchan),dtype='float64')
+        u = n.zeros((nints,self.nbl),dtype='float64')
+        v = n.zeros((nints,self.nbl),dtype='float64')
+        w = n.zeros((nints,self.nbl),dtype='float64')
         pr = n.zeros((nints*self.nbl,5),dtype='float64')
 
         print
@@ -721,9 +719,9 @@ class MiriadReader(Reader):
                 pr[i-nskip] = preamble
                 # uvw stored in preamble index 0,1,2 in units of ns
                 # Assumes miriad files store uvw in ns. Set to lambda by multiplying by freq of first channel.
-                u[(i-nskip)//self.nbl,bldict[preamble[4]],:] = preamble[0] * self.freq_orig[0]
-                v[(i-nskip)//self.nbl,bldict[preamble[4]],:] = preamble[1] * self.freq_orig[0]
-                w[(i-nskip)//self.nbl,bldict[preamble[4]],:] = preamble[2] * self.freq_orig[0]
+                u[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[0] * self.freq_orig[0]
+                v[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[1] * self.freq_orig[0]
+                w[(i-nskip)//self.nbl,bldict[preamble[4]]] = preamble[2] * self.freq_orig[0]
             else:
                 break     # stop at nints
 
