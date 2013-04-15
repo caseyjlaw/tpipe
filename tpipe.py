@@ -23,6 +23,8 @@ try:
 except ImportError:
     try:
         # as a backup, casa stuff can be imported if running casapy
+#        from casac import casac; # Recommended by Sanjay B. (Don't ask me why this is so! :)
+#        ms = casac.ms();
         from casa import ms
         from casa import quanta as qa
         print 'Imported CASA'
@@ -1090,10 +1092,9 @@ class MSReader(Reader):
         self.m0 = n.zeros(self.nints)
 
         self.rawdata = newda
-        self.flags = flags
+        self.flags = n.invert(flags)             # tests show that MS has opposite flag convention as Miriad! using complement of MS flag in tpipe.
         print 'Shape of raw data, time:'
         print self.rawdata.shape, self.reltime.shape
-
 
 class SimulationReader(Reader):
     """ Class for simulating visibility data for transients analysis.
@@ -1197,7 +1198,7 @@ class ProcessByIntegration():
 # using 0 as flag
 #        self.data = n.ma.masked_array(self.rawdata[:self.nints,:, self.chans,:], self.rawdata[:self.nints,:, self.chans,:] == 0j)
 # using standard flags
-        self.data = n.ma.masked_array(self.rawdata[:self.nints,:, self.chans,:], self.flags[:self.nints,:, self.chans,:] == 0)
+        self.data = n.ma.masked_array(self.rawdata[:self.nints,:, self.chans,:], self.flags[:self.nints,:, self.chans,:] == 0)   # mask of True for flagged data (flags=0 in tpipe, which is flags=False in Miriad and flags=True in MS)
         self.dataph = (self.data.mean(axis=3).mean(axis=1)).real   #dataph is summed and detected to form TP beam at phase center, multi-pol
         self.min = self.dataph.min()
         self.max = self.dataph.max()
@@ -1255,8 +1256,6 @@ class ProcessByIntegration():
         twidth = self.twidth
 
         dataon = data[trackon[0], :, trackon[1]]
-        truearron = n.ones( n.shape(dataon) )
-        falsearron = 1e-5*n.ones( n.shape(dataon) )  # small weight to keep n.average from giving NaN
 
         # set up bg track
         if bgwindow:
@@ -1269,23 +1268,17 @@ class ProcessByIntegration():
                     trackoff = (trackoff[0] + list(n.array(track_t)+k), list(trackoff[1]) + list(track_c))
 
             dataoff = data[trackoff[0], :, trackoff[1]]
-            truearroff = n.ones( n.shape(dataoff) )
-            falsearroff = 1e-5*n.ones( n.shape(dataoff) )  # small weight to keep n.average from giving NaN
 
-        datadiffarr = n.zeros((len(self.chans), self.nbl, self.npol),dtype='complex')
+        datadiffarr = n.ma.zeros((len(self.chans), self.nbl, self.npol),dtype='complex')
 
         # compress time axis, then subtract on and off tracks
         for ch in n.unique(trackon[1]):
             indon = n.where(trackon[1] == ch)
-            weightarr = n.where(dataon[indon] != 0j, truearron[indon], falsearron[indon])
-            meanon = n.average(dataon[indon], axis=0, weights=weightarr)
-#            meanon = dataon[indon].mean(axis=0)    # include all zeros
+            meanon = dataon[indon].mean(axis=0)    # include all zeros
 
             if bgwindow:
                 indoff = n.where(trackoff[1] == ch)
-                weightarr = n.where(dataoff[indoff] != 0j, truearroff[indoff], falsearroff[indoff])
-                meanoff = n.average(dataoff[indoff], axis=0, weights=weightarr)
-#                meanoff = dataoff[indoff].mean(axis=0)   # include all zeros
+                meanoff = dataoff[indoff].mean(axis=0)   # include all zeros
 
                 datadiffarr[ch] = meanon - meanoff
                 zeros = n.where( (meanon == 0j) | (meanoff == 0j) )  # find baselines and pols with zeros for meanon or meanoff
@@ -1323,29 +1316,18 @@ for i in range(0, len(n_a)-2):
         """
 
         bisp = lambda d, ij, jk, ki: d[:,ij] * d[:,jk] * n.conj(d[:,ki])    # bispectrum for pol data
-#        bisp = lambda d, ij, jk, ki: n.complex(d[ij] * d[jk] * n.conj(d[ki]))  # without pol axis
 
-        triples = self.make_triples()
-        meanbl = self.data.mean(axis=3).mean(axis=2).mean(axis=0)  # find non-zero bls
-        self.triples = triples[(meanbl[triples][:,0] != 0j) & (meanbl[triples][:,1] != 0j) & (meanbl[triples][:,2] != 0j)]   # take triples with non-zero bls
+        self.triples = self.make_triples()
+        self.bispectra = n.ma.zeros((len(self.data), len(self.triples)), dtype='complex')
 
-        self.bispectra = n.zeros((len(self.data), len(self.triples)), dtype='complex')
-        truearr = n.ones( (self.npol, self.nbl, len(self.chans)))
-        falsearr = n.zeros( (self.npol, self.nbl, len(self.chans)))
-
-        for i in xrange((bgwindow/2)+self.twidth, len(self.data)-( (bgwindow/2)+self.twidth )):
+        for i in xrange((bgwindow/2)+self.twidth, len(self.data)-( (bgwindow/2)+2*self.twidth )):
 #        for i in xrange((bgwindow/2)+self.twidth, len(self.data)-( (bgwindow/2)+self.twidth ), max(1,self.twidth)):  # leaves gaps in data
             diff = self.tracksub(i, bgwindow=bgwindow)
 
             if len(n.shape(diff)) == 1:    # no track
                 continue
 
-            weightarr = n.where(diff != 0j, truearr, falsearr)  # ignore zeros in mean across channels # bit of a hack
-
-            try:
-                diffmean = n.average(diff, axis=2, weights=weightarr)
-            except ZeroDivisionError:
-                diffmean = n.mean(diff, axis=2)    # if all zeros, just make mean # bit of a hack
+            diffmean = n.mean(diff, axis=2)    # if all zeros, just make mean # bit of a hack
 
             for trip in xrange(len(self.triples)):
                 ij, jk, ki = self.triples[trip]
@@ -1483,7 +1465,7 @@ class ProcessByDispersion():
 # using 0 as flag
 #        self.data = n.ma.masked_array(self.rawdata[:self.nints,:, self.chans,:], self.rawdata[:self.nints,:, self.chans,:] == 0j)
 # using standard flags
-        self.data = n.ma.masked_array(self.rawdata[:self.nints,:, self.chans,:], self.flags[:self.nints,:, self.chans,:] == 0)
+        self.data = n.ma.masked_array(self.rawdata[:self.nints,:, self.chans,:], self.flags[:self.nints,:, self.chans,:] == 0)   # mask of True for flagged data (flags=0 in tpipe, which is flags=False in Miriad and flags=True in MS)
         self.dataph = (self.data.mean(axis=3).mean(axis=1)).real   #dataph is summed and detected to form TP beam at phase center, multi-pol
         self.min = self.dataph.min()
         self.max = self.dataph.max()
@@ -1634,7 +1616,7 @@ for i in range(0, len(n_a)-2):
             twidth = n.round(self.twidths[d])
             dmwidth = int(n.round(n.max(self.dmtrack0[d][0]) - n.min(self.dmtrack0[d][0])))
 
-            for i in xrange((bgwindow/2)+twidth, len(self.data)-( (bgwindow/2)+twidth+dmwidth )):   # dmwidth avoided at end, others are split on front and back side of time iteration
+            for i in xrange((bgwindow/2)+twidth, len(self.data)-( (bgwindow/2)+2*twidth+dmwidth )):   # dmwidth avoided at end, others are split on front and back side of time iteration
 #            for i in xrange((bgwindow/2)+twidth, len(self.data)-( (bgwindow/2)+twidth+dmwidth ), max(1,twidth/2)):   # can step by twidth/2, but messes up data products
                 diff = self.tracksub(d, i, bgwindow=bgwindow)
 
@@ -1891,7 +1873,7 @@ class ProcessByDispersion2():
 # using 0 as flag
 #        self.data = n.ma.masked_array(self.rawdata[:self.nints,:, self.chans,:], self.rawdata[:self.nints,:, self.chans,:] == 0j)
 # using standard flags
-        self.data = n.ma.masked_array(self.rawdata[:self.nints,:, self.chans,:], self.flags[:self.nints,:, self.chans,:] == 0)
+        self.data = n.ma.masked_array(self.rawdata[:self.nints,:, self.chans,:], self.flags[:self.nints,:, self.chans,:] == 0)   # mask of True for flagged data (flags=0 in tpipe, which is flags=False in Miriad and flags=True in MS)
         self.dataph = (self.data.mean(axis=3).mean(axis=1)).real   #dataph is summed and detected to form TP beam at phase center, multi-pol
         self.min = self.dataph.min()
         self.max = self.dataph.max()
