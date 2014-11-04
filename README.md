@@ -6,7 +6,7 @@ claw@astro.berkeley.edu
 
 Introduction:
 
-Python script for analysis of radio interferometry data and building transient detection pipelines.
+Python script for analysis of radio interferometry data for finding dispersed (fast) transients
 
 Uses variety of libraries for importing visibility data and building Python numpy arrays for manipulation. 
 Supported data formats include Miriad and Measurement Sets. Uses CASA, miriad-python, or (soon) pyrap.
