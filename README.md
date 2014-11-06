@@ -42,8 +42,8 @@ Files:
 Build Instructions:
 1) Install CASA
 
-2) Build casapy-free CASA (optional)
-This step builds python modules that let you import CASA into any Python session. 
+2) Build casapy-free CASA (optional; not possible on OSX yet)
+This step builds python modules to import CASA into any Python session (no "casapy" session needed).
 This requires fixing some links to libraries with patchelf.
 Full instructions at http://newton.cx/~peter/2014/02/casa-in-python-without-casapy. 
 See also the casapatch.sh script, which must be edited and run to build new CASA python modules.
