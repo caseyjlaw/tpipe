@@ -2,9 +2,9 @@ import numpy as n
 cimport numpy as n
 cimport cython
 # can choose between numpy and pyfftw
-#from numpy import fft
-import pyfftw
-import pyfftw.interfaces.NUMPY_fft as fft
+from numpy import fft
+#import pyfftw
+#import pyfftw.interfaces.NUMPY_fft as fft
 
 CTYPE = n.long
 ctypedef n.long_t CTYPE_t
@@ -213,7 +213,7 @@ cpdef imgallfull(n.ndarray[n.float32_t, ndim=2] u, n.ndarray[n.float32_t, ndim=2
                     for p in xrange(len3):
                         grid[t, cellu, cellv] = data[t,i,j,p] + grid[t, cellu, cellv]
 
-    pyfftw.interfaces.cache.enable()
+#    pyfftw.interfaces.cache.enable()
     for t in xrange(len0):
         grid[t] = fft.ifft2(grid[t])
 # too slow
@@ -267,7 +267,7 @@ cpdef imgallfullfilter(n.ndarray[n.float32_t, ndim=2] u, n.ndarray[n.float32_t, 
                         grid[t, cellu, cellv] = data[t,i,j,p] + grid[t, cellu, cellv]
 
     # make images and filter based on threshold
-    pyfftw.interfaces.cache.enable()
+#    pyfftw.interfaces.cache.enable()
     candints = []; candims = []; candsnrs = []
     for t in xrange(len0):
         im = fft.ifft2(grid[t]).real
@@ -325,7 +325,7 @@ cpdef imgallfullfilterxy(n.ndarray[n.float32_t, ndim=2] u, n.ndarray[n.float32_t
                         grid[t, cellu, cellv] = data[t,i,j,p] + grid[t, cellu, cellv]
 
     # make images and filter based on threshold
-    pyfftw.interfaces.cache.enable()
+#    pyfftw.interfaces.cache.enable()
     candints = []; candims = []; candsnrs = []
     for t in xrange(len0):
         im = fft.ifft2(grid[t]).real
@@ -391,7 +391,7 @@ cpdef imgallfullfilterxy2(n.ndarray[n.float32_t, ndim=2] u, n.ndarray[n.float32_
                         grid[t, cellu, cellv] = data[t,i,j,p] + grid[t, cellu, cellv]
 
     # make images and filter based on threshold
-    pyfftw.interfaces.cache.enable()
+#    pyfftw.interfaces.cache.enable()
     candints = []; candims = []; candsnrs = []
     for t in xrange(len0):
         im = fft.ifft2(grid[t]).real*int(ndimx*ndimy)/float(nonzeros)
@@ -449,7 +449,7 @@ cpdef imgallfullfilterminxy(n.ndarray[n.float32_t, ndim=2] u, n.ndarray[n.float3
                         grid[t, cellu, cellv] = data[t,i,j,p] + grid[t, cellu, cellv]
 
     # make images and filter based on threshold
-    pyfftw.interfaces.cache.enable()
+#    pyfftw.interfaces.cache.enable()
     candints = []; candims = []; candsnrs = []
     for t in xrange(len0):
         im = fft.ifft2(grid[t]).real
@@ -523,7 +523,7 @@ cpdef imgallfullw(n.ndarray[n.float32_t, ndim=2] u, n.ndarray[n.float32_t, ndim=
 #                            grid[t, cellu-ksize/2:cellu+ksize/2+1, cellv-ksize/2:cellv+ksize/2+1] = uvker*data[t,i,j,p,None,None] + grid[t, cellu-ksize/2:cellu+ksize/2+1, cellv-ksize/2:cellv+ksize/2+1]
 #                            grid[t, cellu, cellv] = data[t,i,j,p] + grid[t, cellu, cellv]    # no conv gridding
 
-    pyfftw.interfaces.cache.enable()
+#    pyfftw.interfaces.cache.enable()
     for t in xrange(len0):
         grid[t] = fft.ifft2(grid[t])
 

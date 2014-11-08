@@ -17,13 +17,16 @@ import time as timestamp
 import leanpipedt_cython as lib
 #import leanpipe_external as lib
 import qimg_cython as qimg
-#from numpy import fft as fft
-import pyfftw.interfaces.NUMPY_fft as fft
-import casautil
 
-# set up tools
-ms = casautil.tools.ms()
-qa = casautil.tools.quanta()
+# Optional imports that have extra dependencies
+# can choose fft from numpy or pyfftw.
+from numpy import fft as fft
+#import pyfftw.interfaces.NUMPY_fft as fft
+#
+# optionally can use CASA outside of casapy session. requires hacking CASA shared-object libraries...
+#import casautil
+#ms = casautil.tools.ms()
+#qa = casautil.tools.quanta()
 
 def numpyview(arr, datatype, shape):
     """ Takes mp.Array and returns numpy array with shape of data in MS.

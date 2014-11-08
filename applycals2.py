@@ -1,8 +1,9 @@
 import numpy as n
 import os, glob
-import casautil
 
-tb = casautil.tools.table()
+# optional import for casapy-free CASA
+#import casautil
+#tb = casautil.tools.table()
 
 class solutions():
     """ Container for CASA caltable(s).
