@@ -1,6 +1,8 @@
 tpipe
 =====
 
+<a href="http://ascl.net/1603.012"><img src="https://img.shields.io/badge/ascl-1603.012-blue.svg?colorB=262255" alt="ascl:1603.012" /></a>
+
 Casey Law
 claw@astro.berkeley.edu
 
